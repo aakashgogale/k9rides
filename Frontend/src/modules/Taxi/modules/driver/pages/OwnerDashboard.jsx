@@ -69,14 +69,14 @@ const StatCard = ({ icon, label, value, sub, tone = 'slate' }) => {
           : 'from-slate-900 to-slate-800 text-white';
 
   return (
-    <div className={`rounded-[28px] bg-gradient-to-br ${toneClass} p-5 shadow-xl`}>
+    <div className={`rounded-[28px] bg-gradient-to-br ${toneClass} p-5 shadow-lg transition-all duration-300 hover:scale-[1.02] hover:shadow-xl active:scale-98`}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[10px] font-black uppercase tracking-[0.22em] text-white/65">{label}</p>
           <p className="mt-2 text-[28px] font-black tracking-tight leading-none">{value}</p>
           {sub ? <p className="mt-2 text-[11px] font-bold text-white/75">{sub}</p> : null}
         </div>
-        <div className="grid h-12 w-12 place-items-center rounded-2xl bg-white/15 text-white">
+        <div className="grid h-12 w-12 place-items-center rounded-2xl bg-white/15 text-white shrink-0">
           {icon}
         </div>
       </div>
@@ -146,11 +146,11 @@ const OwnerDashboard = () => {
   return (
     <div className="min-h-screen bg-[#f8f9fb] pb-32">
       <div className="mx-auto max-w-lg px-5 pt-10">
-        <header className="rounded-[32px] bg-slate-900 px-5 py-6 text-white shadow-2xl">
+        <header className="rounded-[32px] bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 px-5 py-6 text-white shadow-2xl transition-all">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <p className="text-[10px] font-black uppercase tracking-[0.24em] text-emerald-400">Owner Dashboard</p>
-              <h1 className="mt-2 text-[28px] font-black tracking-tight leading-none">
+              <h1 className="mt-2 text-[28px] font-black tracking-tight leading-none truncate">
                 {profile.companyName || profile.ownerName || 'Fleet Business'}
               </h1>
               <p className="mt-2 text-[12px] font-bold text-white/70">{businessSubtitle}</p>
@@ -159,7 +159,7 @@ const OwnerDashboard = () => {
               type="button"
               onClick={() => loadDashboard({ silent: true })}
               disabled={isRefreshing}
-              className="grid h-11 w-11 place-items-center rounded-2xl bg-white/10 text-white disabled:opacity-60"
+              className="grid h-11 w-11 place-items-center rounded-2xl bg-white/10 text-white disabled:opacity-60 transition-transform active:scale-90"
               aria-label="Refresh dashboard"
             >
               <RefreshCw size={18} className={isRefreshing ? 'animate-spin' : ''} />
@@ -225,7 +225,7 @@ const OwnerDashboard = () => {
                 <button
                   type="button"
                   onClick={() => navigate('/taxi/owner/bus-service')}
-                  className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-3 py-2 text-[11px] font-black text-white"
+                  className="inline-flex items-center gap-2 rounded-2xl bg-slate-900 px-3 py-2 text-[11px] font-black text-white active:scale-95 transition-transform"
                 >
                   <Bus size={14} />
                   Open Bus
@@ -256,7 +256,7 @@ const OwnerDashboard = () => {
               </div>
             </section>
 
-            <section className="mt-5 rounded-[30px] bg-white p-5 shadow-sm">
+            <section className="mt-5 rounded-[30px] bg-white p-5 shadow-sm overflow-hidden">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Recent Bus Bookings</p>
@@ -265,38 +265,38 @@ const OwnerDashboard = () => {
                 <button
                   type="button"
                   onClick={() => navigate('/taxi/owner/bus-bookings')}
-                  className="text-[11px] font-black text-blue-600"
+                  className="text-[11px] font-black text-blue-600 active:opacity-70"
                 >
                   View all
                 </button>
               </div>
-              <div className="mt-4 space-y-3">
+              <div className="mt-4 flex gap-4 overflow-x-auto pb-4 snap-x snap-mandatory scroll-smooth -mx-5 px-5 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']">
                 {recentBusBookings.length === 0 ? (
-                  <div className="rounded-2xl bg-slate-50 px-4 py-5 text-[12px] font-bold text-slate-400">
+                  <div className="rounded-2xl bg-slate-50 px-4 py-6 text-[12px] font-bold text-slate-400 w-full text-center">
                     No bus bookings found yet.
                   </div>
                 ) : (
                   recentBusBookings.map((booking) => (
-                    <div key={booking.id} className="rounded-2xl bg-slate-50 px-4 py-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-[13px] font-black text-slate-900">
+                    <div key={booking.id} className="w-[85%] sm:w-[320px] shrink-0 snap-start bg-slate-50 border border-slate-100 rounded-3xl p-5 hover:bg-slate-100/50 transition-all flex flex-col justify-between shadow-sm">
+                      <div>
+                        <div className="flex items-start justify-between gap-3">
+                          <p className="text-[13px] font-black text-slate-900 truncate">
                             {booking.busService?.busName || booking.routeSnapshot?.busName || 'Bus Service'}
                           </p>
-                          <p className="mt-1 text-[11px] font-bold text-slate-500">
-                            {booking.routeSnapshot?.originCity || 'Origin'} to {booking.routeSnapshot?.destinationCity || 'Destination'}
-                          </p>
-                          <p className="mt-1 text-[11px] font-bold text-slate-500">
-                            {booking.passenger?.name || 'Passenger'} • {booking.seatLabels?.length || booking.seatIds?.length || 0} seats • {booking.travelDate || '-'}
-                          </p>
-                        </div>
-                        <div className="shrink-0 text-right">
-                          <span className={`inline-flex rounded-full px-2.5 py-1 text-[9px] font-black uppercase tracking-widest ${statusTone(booking.status)}`}>
+                          <span className={`inline-flex rounded-full px-2.5 py-1 text-[9px] font-black uppercase tracking-widest shrink-0 ${statusTone(booking.status)}`}>
                             {booking.status || 'pending'}
                           </span>
-                          <p className="mt-2 text-[12px] font-black text-emerald-600">{money(booking.amount)}</p>
-                          <p className="mt-1 text-[10px] font-bold text-slate-400">{formatRelativeDate(booking.createdAt)}</p>
                         </div>
+                        <p className="mt-2 text-[11px] font-bold text-slate-500">
+                          {booking.routeSnapshot?.originCity || 'Origin'} to {booking.routeSnapshot?.destinationCity || 'Destination'}
+                        </p>
+                        <p className="mt-1 text-[11px] font-semibold text-slate-400">
+                          {booking.passenger?.name || 'Passenger'} • {booking.seatLabels?.length || booking.seatIds?.length || 0} seats • {booking.travelDate || '-'}
+                        </p>
+                      </div>
+                      <div className="mt-4 pt-3 border-t border-slate-200/50 flex items-center justify-between">
+                        <p className="text-[10px] font-bold text-slate-400">{formatRelativeDate(booking.createdAt)}</p>
+                        <p className="text-[13px] font-black text-emerald-600">{money(booking.amount)}</p>
                       </div>
                     </div>
                   ))
@@ -350,7 +350,7 @@ const OwnerDashboard = () => {
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-2xl bg-slate-50 px-4 py-3">
                 <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">Owner</p>
-                <p className="mt-1 text-[14px] font-black text-slate-900">{profile.ownerName || '-'}</p>
+                <p className="mt-1 text-[14px] font-black text-slate-900 truncate">{profile.ownerName || '-'}</p>
               </div>
               <div className="rounded-2xl bg-slate-50 px-4 py-3">
                 <p className="text-[11px] font-black uppercase tracking-widest text-slate-400">Transport</p>
@@ -396,7 +396,7 @@ const OwnerDashboard = () => {
           </div>
         </section>
 
-        <section className="mt-5 rounded-[30px] bg-white p-5 shadow-sm">
+        <section className="mt-5 rounded-[30px] bg-white p-5 shadow-sm overflow-hidden">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Recent Drivers</p>
@@ -405,30 +405,36 @@ const OwnerDashboard = () => {
             <button
               type="button"
               onClick={() => navigate('/taxi/owner/manage-drivers')}
-              className="text-[11px] font-black text-blue-600"
+              className="text-[11px] font-black text-blue-600 active:opacity-70"
             >
               View all
             </button>
           </div>
-          <div className="mt-4 space-y-3">
+          <div className="mt-4 flex gap-4 overflow-x-auto pb-4 snap-x snap-mandatory scroll-smooth -mx-5 px-5 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']">
             {recentDrivers.length === 0 ? (
-              <div className="rounded-2xl bg-slate-50 px-4 py-5 text-[12px] font-bold text-slate-400">
+              <div className="rounded-2xl bg-slate-50 px-4 py-6 text-[12px] font-bold text-slate-400 w-full text-center">
                 No drivers added yet.
               </div>
             ) : (
               recentDrivers.map((driver) => (
-                <div key={driver.id} className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3">
-                  <div className="min-w-0">
-                    <p className="text-[13px] font-black text-slate-900 truncate">{driver.name || 'Driver'}</p>
-                    <p className="mt-1 text-[11px] font-bold text-slate-500">{driver.phone || '-'} • {driver.city || 'No city'}</p>
+                <div key={driver.id} className="w-[75%] sm:w-[260px] shrink-0 snap-start bg-slate-50 border border-slate-100 rounded-3xl p-5 hover:bg-slate-100/50 transition-all flex flex-col justify-between shadow-sm">
+                  <div>
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-[13px] font-black text-slate-900 truncate">{driver.name || 'Driver'}</p>
+                      <span className={`inline-flex rounded-full px-2.5 py-1 text-[9px] font-black uppercase tracking-widest shrink-0 ${statusTone(driver.status)}`}>
+                        {driver.status || 'pending'}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-[11px] font-bold text-slate-500">{driver.phone || '-'}</p>
+                    <p className="mt-1 text-[11px] font-semibold text-slate-400">{driver.city || 'No city'}</p>
                   </div>
-                  <div className="text-right">
-                    <span className={`inline-flex rounded-full px-2.5 py-1 text-[9px] font-black uppercase tracking-widest ${statusTone(driver.status)}`}>
-                      {driver.status || 'pending'}
-                    </span>
-                    <p className="mt-1 text-[10px] font-bold text-slate-400">
-                      {driver.isOnRide ? 'On trip' : driver.isOnline ? 'Online' : 'Offline'}
-                    </p>
+                  <div className="mt-4 pt-3 border-t border-slate-200/50 flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <span className={`w-2 h-2 rounded-full ${driver.isOnline ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                      <p className="text-[11px] font-bold text-slate-500">
+                        {driver.isOnRide ? 'On trip' : driver.isOnline ? 'Online' : 'Offline'}
+                      </p>
+                    </div>
                   </div>
                 </div>
               ))
@@ -436,7 +442,7 @@ const OwnerDashboard = () => {
           </div>
         </section>
 
-        <section className="mt-5 rounded-[30px] bg-white p-5 shadow-sm">
+        <section className="mt-5 rounded-[30px] bg-white p-5 shadow-sm overflow-hidden">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Recent Vehicles</p>
@@ -445,66 +451,67 @@ const OwnerDashboard = () => {
             <button
               type="button"
               onClick={() => navigate('/taxi/owner/vehicle-fleet')}
-              className="text-[11px] font-black text-blue-600"
+              className="text-[11px] font-black text-blue-600 active:opacity-70"
             >
               View all
             </button>
           </div>
-          <div className="mt-4 space-y-3">
+          <div className="mt-4 flex gap-4 overflow-x-auto pb-4 snap-x snap-mandatory scroll-smooth -mx-5 px-5 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']">
             {recentVehicles.length === 0 ? (
-              <div className="rounded-2xl bg-slate-50 px-4 py-5 text-[12px] font-bold text-slate-400">
+              <div className="rounded-2xl bg-slate-50 px-4 py-6 text-[12px] font-bold text-slate-400 w-full text-center">
                 No vehicles added yet.
               </div>
             ) : (
               recentVehicles.map((vehicle) => (
-                <div key={vehicle.id} className="flex items-center justify-between rounded-2xl bg-slate-50 px-4 py-3">
-                  <div className="min-w-0">
-                    <p className="text-[13px] font-black text-slate-900 truncate">
-                      {[vehicle.brand, vehicle.model].filter(Boolean).join(' ') || vehicle.vehicleTypeName || 'Vehicle'}
-                    </p>
-                    <p className="mt-1 text-[11px] font-bold text-slate-500">
-                      {vehicle.number || '-'} • {vehicle.color || 'No color'} • {vehicle.transportType || 'taxi'}
-                    </p>
+                <div key={vehicle.id} className="w-[75%] sm:w-[260px] shrink-0 snap-start bg-slate-50 border border-slate-100 rounded-3xl p-5 hover:bg-slate-100/50 transition-all flex flex-col justify-between shadow-sm">
+                  <div>
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="text-[13px] font-black text-slate-900 truncate">
+                        {[vehicle.brand, vehicle.model].filter(Boolean).join(' ') || vehicle.vehicleTypeName || 'Vehicle'}
+                      </p>
+                      <span className={`inline-flex rounded-full px-2.5 py-1 text-[9px] font-black uppercase tracking-widest shrink-0 ${statusTone(vehicle.status)}`}>
+                        {vehicle.status || 'pending'}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-[12px] font-black text-slate-800">{vehicle.number || '-'}</p>
+                    <p className="mt-1 text-[11px] font-semibold text-slate-400 capitalize">{vehicle.color || 'No color'} • {vehicle.transportType || 'taxi'}</p>
                   </div>
-                  <span className={`inline-flex rounded-full px-2.5 py-1 text-[9px] font-black uppercase tracking-widest ${statusTone(vehicle.status)}`}>
-                    {vehicle.status || 'pending'}
-                  </span>
                 </div>
               ))
             )}
           </div>
         </section>
 
-        <section className="mt-5 rounded-[30px] bg-white p-5 shadow-sm">
+        <section className="mt-5 rounded-[30px] bg-white p-5 shadow-sm overflow-hidden">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-[10px] font-black uppercase tracking-[0.22em] text-slate-400">Recent Bookings</p>
               <h2 className="mt-1 text-[20px] font-black text-slate-950">Latest ride activity</h2>
             </div>
           </div>
-          <div className="mt-4 space-y-3">
+          <div className="mt-4 flex gap-4 overflow-x-auto pb-4 snap-x snap-mandatory scroll-smooth -mx-5 px-5 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:'none'] [scrollbar-width:'none']">
             {recentRides.length === 0 ? (
-              <div className="rounded-2xl bg-slate-50 px-4 py-5 text-[12px] font-bold text-slate-400">
+              <div className="rounded-2xl bg-slate-50 px-4 py-6 text-[12px] font-bold text-slate-400 w-full text-center">
                 No bookings found yet.
               </div>
             ) : (
               recentRides.map((ride) => (
-                <div key={ride.id} className="rounded-2xl bg-slate-50 px-4 py-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
+                <div key={ride.id} className="w-[85%] sm:w-[320px] shrink-0 snap-start bg-slate-50 border border-slate-100 rounded-3xl p-5 hover:bg-slate-100/50 transition-all flex flex-col justify-between shadow-sm">
+                  <div>
+                    <div className="flex items-start justify-between gap-2">
                       <p className="text-[13px] font-black text-slate-900 capitalize">
                         {ride.transportType || 'taxi'} • {ride.driver?.name || 'Driver not assigned'}
                       </p>
-                      <p className="mt-1 text-[11px] font-bold text-slate-500 line-clamp-1">Pickup: {ride.pickupAddress || '-'}</p>
-                      <p className="mt-1 text-[11px] font-bold text-slate-500 line-clamp-1">Drop: {ride.dropAddress || '-'}</p>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <span className={`inline-flex rounded-full px-2.5 py-1 text-[9px] font-black uppercase tracking-widest ${statusTone(ride.status)}`}>
+                      <span className={`inline-flex rounded-full px-2.5 py-1 text-[9px] font-black uppercase tracking-widest shrink-0 ${statusTone(ride.status)}`}>
                         {ride.status || 'pending'}
                       </span>
-                      <p className="mt-2 text-[12px] font-black text-emerald-600">{money(ride.earnings || ride.fare)}</p>
-                      <p className="mt-1 text-[10px] font-bold text-slate-400">{formatRelativeDate(ride.createdAt)}</p>
                     </div>
+                    <p className="mt-2 text-[11px] font-medium text-slate-500 truncate"><strong className="text-slate-700">P:</strong> {ride.pickupAddress || '-'}</p>
+                    <p className="mt-1 text-[11px] font-medium text-slate-500 truncate"><strong className="text-slate-700">D:</strong> {ride.dropAddress || '-'}</p>
+                  </div>
+                  <div className="mt-4 pt-3 border-t border-slate-200/50 flex items-center justify-between">
+                    <p className="text-[10px] font-bold text-slate-400">{formatRelativeDate(ride.createdAt)}</p>
+                    <p className="text-[13px] font-black text-emerald-600">{money(ride.earnings || ride.fare)}</p>
                   </div>
                 </div>
               ))
@@ -516,24 +523,24 @@ const OwnerDashboard = () => {
           <button
             type="button"
             onClick={() => navigate('/taxi/owner/manage-drivers')}
-            className="flex items-center justify-between rounded-[26px] bg-white px-4 py-4 shadow-sm"
+            className="flex items-center justify-between rounded-[26px] bg-white px-4 py-4 shadow-sm transition-all hover:scale-[1.02] active:scale-95"
           >
             <div className="text-left">
               <p className="text-[11px] font-black text-slate-900">Manage Drivers</p>
               <p className="mt-1 text-[10px] font-bold text-slate-400">Edit your team</p>
             </div>
-            <ArrowRight size={16} className="text-slate-300" />
+            <ArrowRight size={16} className="text-slate-300 animate-pulse" />
           </button>
           <button
             type="button"
             onClick={() => navigate('/taxi/owner/vehicle-fleet')}
-            className="flex items-center justify-between rounded-[26px] bg-white px-4 py-4 shadow-sm"
+            className="flex items-center justify-between rounded-[26px] bg-white px-4 py-4 shadow-sm transition-all hover:scale-[1.02] active:scale-95"
           >
             <div className="text-left">
               <p className="text-[11px] font-black text-slate-900">Manage Fleet</p>
               <p className="mt-1 text-[10px] font-bold text-slate-400">Update vehicles</p>
             </div>
-            <ArrowRight size={16} className="text-slate-300" />
+            <ArrowRight size={16} className="text-slate-300 animate-pulse" />
           </button>
         </div>
       </div>

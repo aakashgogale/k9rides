@@ -375,8 +375,7 @@ const MainLayout = ({ children }) => {
   const isAdminPath =
     location.pathname.startsWith('/taxi/admin') ||
     location.pathname.startsWith('/taxi/user-import') ||
-    location.pathname.startsWith('/taxi/driver-import') ||
-    location.pathname.startsWith('/taxi/owner');
+    location.pathname.startsWith('/taxi/driver-import');
 
   if (isAdminPath) {
     return <div className="redigo-admin-root h-screen bg-gray-50 overflow-hidden">{children}</div>;
