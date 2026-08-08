@@ -2241,6 +2241,44 @@ export const loginDriver = async (req, res) => {
   });
 };
 
+/**
+ * Sets the driver's work mode — which job streams they accept: all | taxi | delivery.
+ * Only capabilities the driver actually has are honored (can't select 'delivery' without it).
+ */
+export const setWorkMode = async (req, res) => {
+  const requested = String(req.body?.workMode || '').trim().toLowerCase();
+  if (!['all', 'taxi', 'delivery'].includes(requested)) {
+    throw new ApiError(400, "workMode must be one of: all, taxi, delivery");
+  }
+
+  const driver = await Driver.findById(req.auth.sub);
+  if (!driver) throw new ApiError(404, "Driver not found");
+
+  const caps = Array.isArray(driver.serviceCapabilities) && driver.serviceCapabilities.length
+    ? driver.serviceCapabilities
+    : ['taxi'];
+
+  // Guard: a driver can only pick a mode they're actually set up for.
+  if (requested === 'taxi' && !caps.includes('taxi')) {
+    throw new ApiError(400, "You are not registered for taxi rides");
+  }
+  if (requested === 'delivery' && !caps.includes('delivery')) {
+    throw new ApiError(400, "You are not registered for deliveries");
+  }
+  if (requested === 'all' && caps.length < 2) {
+    throw new ApiError(400, "You need both taxi and delivery capability for 'all' mode");
+  }
+
+  driver.workMode = requested;
+  await driver.save();
+
+  res.json({
+    success: true,
+    message: `Work mode set to ${requested}`,
+    data: { workMode: driver.workMode, serviceCapabilities: caps },
+  });
+};
+
 export const goOnline = async (req, res) => {
   const { location, selfieImageUrl } = req.body;
 

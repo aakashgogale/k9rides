@@ -126,7 +126,12 @@ export const config = {
     petpoojaApiKey: process.env.PETPOOJA_API_KEY || '',
     petpoojaClientCode: process.env.PETPOOJA_CLIENT_CODE || '',
     petpoojaOutletId: process.env.PETPOOJA_OUTLET_ID || '',
-    petpoojaApiUrl: process.env.PETPOOJA_API_URL || 'https://api.petpooja.com/v2'
+    petpoojaApiUrl: process.env.PETPOOJA_API_URL || 'https://api.petpooja.com/v2',
+
+    // Driver unification: when true, dispatch treats taxi drivers + delivery partners as one
+    // pool and honors workMode + the activeAssignment busy-lock. Default OFF for safe dual-run —
+    // flip only after the backfill migration has run and been validated on staging.
+    unifiedDispatchEnabled: process.env.UNIFIED_DISPATCH_ENABLED === 'true'
 };
 
 // Taxi Module Compatibility Export

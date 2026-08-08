@@ -25,6 +25,7 @@ import {
   claimDriverIncentiveReward,
   goOffline,
   goOnline,
+  setWorkMode,
   createBusDriverReservation,
   updateBusDriverSchedules,
   getCurrentDriver,
@@ -430,6 +431,7 @@ driverRouter.get(
   asyncHandler(getOnboardingSession),
 );
 driverRouter.patch("/online", authenticate(["driver"]), asyncHandler(goOnline));
+driverRouter.patch("/work-mode", authenticate(["driver"]), asyncHandler(setWorkMode));
 driverRouter.patch(
   "/offline",
   authenticate(["driver"]),
