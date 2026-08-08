@@ -939,6 +939,15 @@ export const adminAPI = {
       contextModule: "admin",
     });
   },
+  /** PetPooja integration (admin) */
+  getPetpoojaSettings: () =>
+    apiClient.get(API_ENDPOINTS.ADMIN.PETPOOJA_SETTINGS, { contextModule: "admin" }),
+  updatePetpoojaSettings: (data) =>
+    apiClient.put(API_ENDPOINTS.ADMIN.PETPOOJA_SETTINGS, data ?? {}, { contextModule: "admin" }),
+  getPetpoojaSyncLogs: (params) =>
+    apiClient.get(API_ENDPOINTS.ADMIN.PETPOOJA_SYNC_LOGS, { params, contextModule: "admin" }),
+  retryPetpoojaSyncLog: (logId) =>
+    apiClient.post(`${API_ENDPOINTS.ADMIN.PETPOOJA_SYNC_LOGS}/${String(logId)}/retry`, {}, { contextModule: "admin" }),
 };
 
 /** Restaurant API - OTP login via new backend; no email/password. */

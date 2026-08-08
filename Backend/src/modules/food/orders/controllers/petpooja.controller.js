@@ -2,15 +2,16 @@ import { FoodOrder } from '../models/order.model.js';
 import { FoodRestaurant } from '../../restaurant/models/restaurant.model.js';
 import * as orderService from '../services/order.service.js';
 import { buildOrderIdentityFilter } from '../services/order.helpers.js';
+import { getPetpoojaSettings } from '../services/petpooja.service.js';
 import { logger } from '../../../../utils/logger.js';
-import { config } from '../../../../config/env.js';
 
 /**
  * Handles incoming webhooks from Petpooja POS to update order states on K9.
  */
 export async function petpoojaWebhookController(req, res, next) {
     try {
-        if (!config.petpoojaEnabled) {
+        const settings = await getPetpoojaSettings();
+        if (!settings.enabled) {
             return res.status(503).json({ success: false, message: 'Petpooja integration is disabled' });
         }
 

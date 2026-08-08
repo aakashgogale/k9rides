@@ -217,20 +217,35 @@ export const applyDriverWalletAdjustment = async ({
   }
 
   const before = await getWalletSnapshot(driver);
-  const balanceAfter = Math.round((before.balance + normalizedAmount) * 100) / 100;
-  const isBlockedAfter = !before.rules.isWalletEnabled || balanceAfter <= before.minimumBalanceForOrders;
 
+  // ponytail: compute balance AND isBlocked in one atomic aggregation-pipeline update so the
+  // block flag is derived from the real post-balance. Deriving it from the pre-read snapshot
+  // (then $set) lost the update under concurrent adjustments.
+  const walletEnabled = before.rules.isWalletEnabled;
+  const minBal = before.minimumBalanceForOrders;
   const updatedDriver = await Driver.findByIdAndUpdate(
     driverId,
-    {
-      $inc: { 'wallet.balance': normalizedAmount },
-      $set: {
-        'wallet.cashLimit': before.cashLimit,
-        'wallet.isBlocked': isBlockedAfter,
+    [
+      {
+        $set: {
+          'wallet.balance': {
+            $round: [{ $add: [{ $ifNull: ['$wallet.balance', 0] }, normalizedAmount] }, 2],
+          },
+          'wallet.cashLimit': before.cashLimit,
+        },
       },
-    },
+      {
+        $set: {
+          'wallet.isBlocked': walletEnabled ? { $lte: ['$wallet.balance', minBal] } : true,
+        },
+      },
+    ],
     { returnDocument: 'after', session },
   );
+
+  const balanceAfter = Math.round((updatedDriver.wallet.balance) * 100) / 100;
+  const balanceBefore = Math.round((balanceAfter - normalizedAmount) * 100) / 100;
+  const isBlockedAfter = Boolean(updatedDriver.wallet.isBlocked);
 
   const [transaction] = await WalletTransaction.create(
     [
@@ -239,7 +254,7 @@ export const applyDriverWalletAdjustment = async ({
         rideId,
         type,
         amount: normalizedAmount,
-        balanceBefore: before.balance,
+        balanceBefore,
         balanceAfter,
         cashLimit: before.cashLimit,
         isBlockedAfter,

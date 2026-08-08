@@ -205,7 +205,9 @@ router.get('/orders', orderController.listOrdersAdminController);
 router.get('/orders/:orderId', orderController.getOrderByIdAdminController);
 router.delete('/orders/:orderId', orderController.deleteOrderAdminController);
 
-// ----- Petpooja Sync Logs -----
+// ----- Petpooja Settings & Sync Logs -----
+router.get('/petpooja/settings', businessSettingsController.getPetpoojaSettings);
+router.put('/petpooja/settings', businessSettingsController.updatePetpoojaSettings);
 router.get('/petpooja/sync-logs', orderController.listPetpoojaSyncLogsController);
 router.post('/petpooja/sync-logs/:logId/retry', orderController.retryPetpoojaSyncLogController);
 

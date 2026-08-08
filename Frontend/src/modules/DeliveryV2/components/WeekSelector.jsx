@@ -1,6 +1,25 @@
 import React from "react";
-import { addDays, startOfWeek, endOfWeek } from "date-fns";
 import { cn } from "@food/utils/utils";
+
+// ponytail: native Date helpers instead of pulling in the whole date-fns dependency
+// (it wasn't installed and broke the production build). Same semantics as date-fns.
+const addDays = (date, n) => {
+  const d = new Date(date);
+  d.setDate(d.getDate() + n);
+  return d;
+};
+const startOfWeek = (date, { weekStartsOn = 0 } = {}) => {
+  const d = new Date(date);
+  const diff = (d.getDay() - weekStartsOn + 7) % 7;
+  d.setDate(d.getDate() - diff);
+  d.setHours(0, 0, 0, 0);
+  return d;
+};
+const endOfWeek = (date, opts) => {
+  const e = addDays(startOfWeek(date, opts), 6);
+  e.setHours(23, 59, 59, 999);
+  return e;
+};
 import { Button } from "@food/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@food/components/ui/popover";
 import { Calendar } from "@food/components/ui/calendar";

@@ -1,6 +1,80 @@
 import { FoodBusinessSettings } from '../models/businessSettings.model.js';
+import { FoodPetpoojaSettings } from '../models/petpoojaSettings.model.js';
 import { sendResponse } from '../../../../utils/response.js';
 import { uploadImageBufferDetailed } from '../../../../services/cloudinary.service.js';
+
+const maskSecret = (value) => {
+    const str = String(value || '');
+    if (!str) return '';
+    if (str.length <= 4) return '••••';
+    return `${'•'.repeat(Math.max(4, str.length - 4))}${str.slice(-4)}`;
+};
+
+/**
+ * Returns the platform's global PetPooja credentials for the admin panel.
+ * Secrets are masked; `hasApiKey`/`hasClientCode` tell the UI whether a value is set.
+ */
+export async function getPetpoojaSettings(req, res, next) {
+    try {
+        let settings = await FoodPetpoojaSettings.findOne().lean();
+        if (!settings) {
+            settings = await FoodPetpoojaSettings.create({});
+            settings = settings.toObject();
+        }
+        return sendResponse(res, 200, 'PetPooja settings fetched successfully', {
+            enabled: settings.enabled,
+            apiUrl: settings.apiUrl,
+            apiKeyMasked: maskSecret(settings.apiKey),
+            clientCodeMasked: maskSecret(settings.clientCode),
+            hasApiKey: Boolean(settings.apiKey),
+            hasClientCode: Boolean(settings.clientCode),
+            updatedAt: settings.updatedAt,
+        });
+    } catch (error) {
+        next(error);
+    }
+}
+
+/**
+ * Updates the global PetPooja credentials from the admin panel.
+ * apiKey / clientCode are only overwritten when a non-empty value is supplied,
+ * so the admin isn't forced to re-enter secrets on every save.
+ */
+export async function updatePetpoojaSettings(req, res, next) {
+    try {
+        const { enabled, apiKey, clientCode, apiUrl } = req.body || {};
+
+        let settings = await FoodPetpoojaSettings.findOne();
+        if (!settings) settings = new FoodPetpoojaSettings();
+
+        if (enabled !== undefined) settings.enabled = Boolean(enabled);
+        if (apiUrl !== undefined) {
+            if (apiUrl && !/^https?:\/\/.+/i.test(String(apiUrl).trim())) {
+                return res.status(400).json({ success: false, message: 'apiUrl must be a valid http(s) URL' });
+            }
+            if (apiUrl) settings.apiUrl = String(apiUrl).trim();
+        }
+        if (typeof apiKey === 'string' && apiKey.trim()) settings.apiKey = apiKey.trim();
+        if (typeof clientCode === 'string' && clientCode.trim()) settings.clientCode = clientCode.trim();
+
+        // Guard: can't enable the integration without both credentials present.
+        if (settings.enabled && (!settings.apiKey || !settings.clientCode)) {
+            return res.status(400).json({ success: false, message: 'apiKey and clientCode are required to enable PetPooja' });
+        }
+
+        await settings.save();
+        return sendResponse(res, 200, 'PetPooja settings updated successfully', {
+            enabled: settings.enabled,
+            apiUrl: settings.apiUrl,
+            apiKeyMasked: maskSecret(settings.apiKey),
+            clientCodeMasked: maskSecret(settings.clientCode),
+            hasApiKey: Boolean(settings.apiKey),
+            hasClientCode: Boolean(settings.clientCode),
+        });
+    } catch (error) {
+        next(error);
+    }
+}
 
 export async function getBusinessSettings(req, res, next) {
     try {

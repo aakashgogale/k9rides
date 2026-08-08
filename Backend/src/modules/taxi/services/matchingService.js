@@ -358,7 +358,12 @@ export const matchDrivers = async (pickupCoords, options = {}) => {
 
   // Development Fallback: If still no matching drivers are found, make a dummy/existing driver online
   // and place them at the pickup location with matching vehicle configuration.
-  if (drivers.length === 0) {
+  // ponytail: guarded off in production so a real driver is never hijacked/teleported.
+  // Opt in for local/dev by setting ENABLE_DEV_DRIVER_FALLBACK=true.
+  const devFallbackEnabled =
+    process.env.NODE_ENV !== 'production' &&
+    process.env.ENABLE_DEV_DRIVER_FALLBACK === 'true';
+  if (drivers.length === 0 && devFallbackEnabled) {
     console.log('[matchDrivers] No matching drivers found. Triggering development fallback...');
     const fallbackDriver = await Driver.findOne({});
     if (fallbackDriver) {

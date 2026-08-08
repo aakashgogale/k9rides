@@ -121,6 +121,7 @@ export function validateCreateOrderDto(body) {
             normalizePaymentMethod,
             z.enum(['cash', 'razorpay', 'razorpay_qr', 'wallet'])
         ),
+        couponCode: z.string().optional(),
         zoneId: z.string().nullable().optional()
     });
     const result = schema.safeParse(body);

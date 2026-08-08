@@ -22,7 +22,8 @@
     "migrate:order-payments": "node scripts/migrate-orders-to-transactions.js",
     "cleanup:legacy-collections": "node scripts/cleanup-legacy-collections.js",
     "verify-cancel": "node verify_cancellation.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "npm run test:flow",
+    "test:flow": "node tests/flow.smoke.mjs"
   },
   "keywords": [],
   "author": "",
@@ -56,6 +57,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "mongodb-memory-server": "^11.2.0",
     "nodemon": "^3.1.14"
   }
 }

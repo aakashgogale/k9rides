@@ -14,6 +14,7 @@ import {
 } from '../chat/services/supportChatService.js';
 import {
   addSocketSubscriptions,
+  getDispatchState,
   joinRideRoom,
   markDriverRejectedFromDispatch,
   notifyLateAvailableDriver,
@@ -246,11 +247,17 @@ export const configureTaxiSocketServer = (io) => {
         return;
       }
 
+      // ponytail: only a driver who was actually offered this ride may reject it — otherwise any
+      // driver could poke any rideId. And never broadcast the driverId into the rider's room.
+      const state = getDispatchState(rideId);
+      const wasOffered = Array.isArray(state?.notifiedDriverIds)
+        && state.notifiedDriverIds.map(String).includes(String(identity.sub));
+      if (!wasOffered) {
+        return;
+      }
+
       markDriverRejectedFromDispatch(rideId, identity.sub);
-      socket.to(getRideRoom(rideId)).emit('driverRejectedRide', {
-        rideId,
-        driverId: identity.sub,
-      });
+      socket.to(getRideRoom(rideId)).emit('driverRejectedRide', { rideId });
     });
 
     socket.on('disconnect', async () => {

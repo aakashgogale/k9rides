@@ -240,7 +240,9 @@ export async function acceptOrderDelivery(orderId, deliveryPartnerId) {
 
   const partnerId = new mongoose.Types.ObjectId(deliveryPartnerId);
   const now = new Date();
-  const acceptedStatuses = ['created', 'confirmed', 'preparing', 'ready_for_pickup', 'picked_up'];
+  // ponytail: a rider must not lock an order the restaurant hasn't confirmed yet ('created' =
+  // paid but not accepted). Accept only from 'confirmed' onwards.
+  const acceptedStatuses = ['confirmed', 'preparing', 'ready_for_pickup', 'picked_up'];
   const cancellableStatuses = [
     'cancelled_by_user',
     'cancelled_by_restaurant',

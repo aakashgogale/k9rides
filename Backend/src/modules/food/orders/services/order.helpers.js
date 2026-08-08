@@ -7,6 +7,7 @@ import {
 } from "../../../../core/notifications/firebase.service.js";
 import { getIO, rooms } from '../../../../config/socket.js';
 import { addOrderJob } from '../../../../queues/producers/order.producer.js';
+import { STATUS_PRIORITY } from '../../../../constants/orderStatus.js';
 
 export function enqueueOrderEvent(action, payload = {}) {
   try {
@@ -313,31 +314,29 @@ export async function notifyRestaurantNewOrder(orderDoc) {
       },
     );
 
-    // Trigger Petpooja Order Push (Asynchronous / Non-blocking)
-    if (config.petpoojaEnabled) {
-      enqueueOrderEvent('PETPOOJA_ORDER_PUSH', {
-        orderMongoId: orderDoc._id.toString(),
-        orderId: orderDoc.order_id || orderDoc._id.toString()
-      });
+    // Trigger Petpooja Order Push (Asynchronous / Non-blocking).
+    // Use the admin-managed setting (DB, with env fallback) — not just config.petpoojaEnabled —
+    // so enabling PetPooja from the admin UI actually pushes orders. Dynamic import avoids a
+    // circular dependency between order.helpers and petpooja.service.
+    try {
+      const { getPetpoojaSettings } = await import('./petpooja.service.js');
+      const petpoojaSettings = await getPetpoojaSettings();
+      if (petpoojaSettings.enabled) {
+        enqueueOrderEvent('PETPOOJA_ORDER_PUSH', {
+          orderMongoId: orderDoc._id.toString(),
+          orderId: orderDoc.order_id || orderDoc._id.toString()
+        });
+      }
+    } catch (petpoojaErr) {
+      logger.warn(`[Petpooja] Could not resolve settings for order push: ${petpoojaErr.message}`);
     }
   } catch {
     // Do not block order/payment flow if notification fails.
   }
 }
 
-export const STATUS_PRIORITY = {
-  created: 10,
-  confirmed: 20,
-  preparing: 30,
-  ready_for_pickup: 40,
-  reached_pickup: 50,
-  picked_up: 60,
-  reached_drop: 70,
-  delivered: 80,
-  cancelled_by_user: 100,
-  cancelled_by_restaurant: 100,
-  cancelled_by_admin: 100,
-};
+// Re-exported from the single source of truth (constants/orderStatus.js).
+export { STATUS_PRIORITY };
 
 /**
  * Returns true if the next status is a valid forward progression from the current status.

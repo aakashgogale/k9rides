@@ -82,58 +82,89 @@ export const addRideToPoolGroup = async (poolGroupId, newRide) => {
   const settings = await getInstantPoolingSettings();
 
   const requiredSeats = newRide.poolSeats || 1;
-  const currentOccupied = group.occupiedSeats || 0;
-  const maxCapacity = group.totalCapacity || 4;
 
-  if (currentOccupied + requiredSeats > maxCapacity) {
+  // ponytail: guard against a driver with no GPS fix before routing (would throw on .coordinates).
+  if (!driver?.location?.coordinates) {
     return false;
   }
 
-  // Populate active rides with user details for sequence name rendering
-  const populatedActiveRides = await Ride.find({
-    _id: { $in: [...group.activeRides.map(r => r._id), newRide._id] }
-  }).populate('userId', 'name');
-
-  const optimalSeq = findOptimalRouteSequence(
-    driver.location.coordinates,
-    populatedActiveRides,
+  // ponytail: claim seats atomically so two concurrent joins can't overbook the vehicle.
+  // The $expr guard rejects the update if occupiedSeats + requiredSeats would exceed capacity.
+  const claimed = await InstantPoolGroup.findOneAndUpdate(
     {
-      maxDetourMeters: Number(settings.max_detour_meters || 5000),
-      maxEtaIncreaseMinutes: Number(settings.max_eta_increase_minutes || 15),
-    }
+      _id: poolGroupId,
+      status: { $nin: ['completed', 'cancelled'] },
+      // $ifNull so legacy groups without totalCapacity default to 4 instead of failing every claim.
+      $expr: { $lte: [{ $add: ['$occupiedSeats', requiredSeats] }, { $ifNull: ['$totalCapacity', 4] }] },
+    },
+    { $inc: { occupiedSeats: requiredSeats } },
+    { new: true }
   );
-
-  // If sequence optimization returns empty, detour rules were violated
-  if (optimalSeq.length === 0) {
-    return false;
+  if (!claimed) {
+    return false; // full, or group gone
   }
 
-  group.activeRides.push(newRide._id);
-  group.occupiedSeats += requiredSeats;
-  group.routeSequence = optimalSeq;
-  group.routeVersion += 1;
-  group.status = 'active';
-  await group.save();
+  const releaseSeats = () =>
+    InstantPoolGroup.updateOne({ _id: poolGroupId }, { $inc: { occupiedSeats: -requiredSeats } });
 
-  // Update driver details
-  await Driver.findByIdAndUpdate(group.driverId, {
-    poolOccupiedSeats: group.occupiedSeats,
-    activePoolRideCount: group.activeRides.length,
-  });
+  // Everything after the seat claim must release the seats on ANY failure, or the claim leaks
+  // and the group is permanently under-capacity.
+  let updatedGroup;
+  try {
+    // Populate active rides with user details for sequence name rendering
+    const populatedActiveRides = await Ride.find({
+      _id: { $in: [...group.activeRides.map(r => r._id), newRide._id] }
+    }).populate('userId', 'name');
 
-  // Link ride to pool group
-  newRide.poolGroupId = group._id;
-  newRide.status = 'accepted';
-  newRide.liveStatus = 'accepted';
-  newRide.driverId = group.driverId;
-  newRide.routeVersion = group.routeVersion;
-  await newRide.save();
+    const optimalSeq = findOptimalRouteSequence(
+      driver.location.coordinates,
+      populatedActiveRides,
+      {
+        maxDetourMeters: Number(settings.max_detour_meters || 5000),
+        maxEtaIncreaseMinutes: Number(settings.max_eta_increase_minutes || 15),
+      }
+    );
 
-  // Increment route version on existing rides too
-  await Ride.updateMany(
-    { _id: { $in: group.activeRides } },
-    { $set: { routeVersion: group.routeVersion } }
-  );
+    // If sequence optimization returns empty, detour rules were violated — give the seats back.
+    if (optimalSeq.length === 0) {
+      await releaseSeats();
+      return false;
+    }
+
+    // Atomically attach the ride + bump route version (avoids clobbering a concurrent join's array).
+    updatedGroup = await InstantPoolGroup.findByIdAndUpdate(
+      poolGroupId,
+      {
+        $push: { activeRides: newRide._id },
+        $set: { routeSequence: optimalSeq, status: 'active' },
+        $inc: { routeVersion: 1 },
+      },
+      { new: true }
+    );
+
+    // Update driver details
+    await Driver.findByIdAndUpdate(group.driverId, {
+      poolOccupiedSeats: updatedGroup.occupiedSeats,
+      activePoolRideCount: updatedGroup.activeRides.length,
+    });
+
+    // Link ride to pool group
+    newRide.poolGroupId = group._id;
+    newRide.status = 'accepted';
+    newRide.liveStatus = 'accepted';
+    newRide.driverId = group.driverId;
+    newRide.routeVersion = updatedGroup.routeVersion;
+    await newRide.save();
+
+    // Increment route version on existing rides too
+    await Ride.updateMany(
+      { _id: { $in: updatedGroup.activeRides } },
+      { $set: { routeVersion: updatedGroup.routeVersion } }
+    );
+  } catch (err) {
+    await releaseSeats().catch(() => {});
+    throw err;
+  }
 
   auditLog('Passenger Joined', { poolGroupId: group._id, rideId: newRide._id });
 
@@ -141,35 +172,90 @@ export const addRideToPoolGroup = async (poolGroupId, newRide) => {
   emitToRoom(getDriverRoom(group.driverId), 'pool.member.joined', {
     rideId: String(newRide._id),
     poolGroupId: String(group._id),
-    routeVersion: group.routeVersion,
+    routeVersion: updatedGroup.routeVersion,
   });
 
   for (const ride of group.activeRides) {
     if (String(ride._id) !== String(newRide._id)) {
       emitToRoom(getRideRoom(ride._id), 'pool.member.joined', {
         message: 'Another passenger has joined your shared ride.',
-        routeVersion: group.routeVersion,
+        routeVersion: updatedGroup.routeVersion,
       });
     }
   }
 
-  broadcastPoolUpdate(group);
+  broadcastPoolUpdate(updatedGroup);
   return true;
+};
+
+/**
+ * Atomically detaches a ride from a pool group: pulls it from activeRides, decrements
+ * occupiedSeats (floored at 0), and bumps routeVersion — all in one aggregation-pipeline
+ * update so concurrent leaves/completions can't clobber each other (Uber/Ola-style seat
+ * accounting). Returns the updated group (or null if it was gone).
+ */
+const detachRideFromGroupAtomic = async (poolGroupId, rideId, releasedSeats) => {
+  const rideObjId = new mongoose.Types.ObjectId(String(rideId));
+  return InstantPoolGroup.findByIdAndUpdate(
+    poolGroupId,
+    [
+      {
+        $set: {
+          activeRides: {
+            $filter: {
+              input: { $ifNull: ['$activeRides', []] },
+              as: 'r',
+              cond: { $ne: ['$$r', rideObjId] },
+            },
+          },
+          // Only release seats if the ride is actually still in the group, so a double-remove
+          // (or a remove racing a completion of the same ride) can't over-decrement.
+          occupiedSeats: {
+            $max: [
+              0,
+              {
+                $subtract: [
+                  { $ifNull: ['$occupiedSeats', 0] },
+                  { $cond: [{ $in: [rideObjId, { $ifNull: ['$activeRides', []] }] }, releasedSeats, 0] },
+                ],
+              },
+            ],
+          },
+          routeVersion: { $add: [{ $ifNull: ['$routeVersion', 0] }, 1] },
+        },
+      },
+    ],
+    { new: true },
+  );
+};
+
+/**
+ * Conditionally closes a pool group and frees the driver — only the caller that actually flips
+ * status to 'completed' releases the driver, so simultaneous last-passenger events don't double-run.
+ */
+const closePoolGroup = async (group) => {
+  const closed = await InstantPoolGroup.findOneAndUpdate(
+    { _id: group._id, status: { $ne: 'completed' } },
+    { $set: { status: 'completed' } },
+    { new: true },
+  );
+  if (closed) {
+    await Driver.findByIdAndUpdate(group.driverId, {
+      isOnRide: false,
+      activePoolGroupId: null,
+      poolOccupiedSeats: 0,
+      activePoolRideCount: 0,
+    });
+  }
+  return closed;
 };
 
 /**
  * Removes a passenger ride from a pool group (cancellation or reject).
  */
 export const removeRideFromPoolGroup = async (poolGroupId, rideId, cancelReason = 'cancelled') => {
-  const group = await InstantPoolGroup.findById(poolGroupId);
-  if (!group) return;
-
   const targetRide = await Ride.findById(rideId);
   const releasedSeats = targetRide?.poolSeats || 1;
-
-  group.activeRides = group.activeRides.filter(id => String(id) !== String(rideId));
-  group.occupiedSeats = Math.max(0, group.occupiedSeats - releasedSeats);
-  group.routeVersion += 1;
 
   // Clean ride document
   if (targetRide) {
@@ -179,29 +265,27 @@ export const removeRideFromPoolGroup = async (poolGroupId, rideId, cancelReason 
     await targetRide.save();
   }
 
+  const group = await detachRideFromGroupAtomic(poolGroupId, rideId, releasedSeats);
+  if (!group) return;
+
   auditLog('Passenger Left', { poolGroupId, rideId, reason: cancelReason });
 
   if (group.activeRides.length === 0) {
-    // Shutdown pool group entirely
-    group.status = 'completed';
-    await group.save();
+    const closed = await closePoolGroup(group);
+    if (closed) {
+      emitToRoom(getDriverRoom(group.driverId), 'pool.closed', { poolGroupId, routeVersion: group.routeVersion });
+      auditLog('Pool Closed', { poolGroupId });
+    }
+    return;
+  }
 
-    await Driver.findByIdAndUpdate(group.driverId, {
-      isOnRide: false,
-      activePoolGroupId: null,
-      poolOccupiedSeats: 0,
-      activePoolRideCount: 0,
-    });
+  // Re-optimize route with remaining rides (persist routeSequence via targeted $set, not a
+  // full-doc save, so it can't clobber the atomic seat/version fields).
+  const driver = await Driver.findById(group.driverId);
+  const settings = await getInstantPoolingSettings();
+  const remainingRides = await Ride.find({ _id: { $in: group.activeRides } }).populate('userId', 'name');
 
-    emitToRoom(getDriverRoom(group.driverId), 'pool.closed', { poolGroupId, routeVersion: group.routeVersion });
-    auditLog('Pool Closed', { poolGroupId });
-  } else {
-    // Re-optimize route with remaining rides
-    const driver = await Driver.findById(group.driverId);
-    const settings = await getInstantPoolingSettings();
-
-    const remainingRides = await Ride.find({ _id: { $in: group.activeRides } }).populate('userId', 'name');
-
+  if (driver?.location?.coordinates) {
     const optimalSeq = findOptimalRouteSequence(
       driver.location.coordinates,
       remainingRides,
@@ -210,38 +294,33 @@ export const removeRideFromPoolGroup = async (poolGroupId, rideId, cancelReason 
         maxEtaIncreaseMinutes: Number(settings.max_eta_increase_minutes || 15),
       }
     );
-
+    await InstantPoolGroup.updateOne({ _id: poolGroupId }, { $set: { routeSequence: optimalSeq } });
     group.routeSequence = optimalSeq;
-    await group.save();
+  }
 
-    // Update driver seats
-    await Driver.findByIdAndUpdate(group.driverId, {
-      poolOccupiedSeats: group.occupiedSeats,
-      activePoolRideCount: group.activeRides.length,
-    });
+  await Driver.findByIdAndUpdate(group.driverId, {
+    poolOccupiedSeats: group.occupiedSeats,
+    activePoolRideCount: group.activeRides.length,
+  });
 
-    // Update versions on remaining rides
-    await Ride.updateMany(
-      { _id: { $in: group.activeRides } },
-      { $set: { routeVersion: group.routeVersion } }
-    );
+  await Ride.updateMany(
+    { _id: { $in: group.activeRides } },
+    { $set: { routeVersion: group.routeVersion } }
+  );
 
-    // Notify driver and remaining users
-    emitToRoom(getDriverRoom(group.driverId), 'pool.member.left', {
-      rideId,
-      poolGroupId,
+  emitToRoom(getDriverRoom(group.driverId), 'pool.member.left', {
+    rideId,
+    poolGroupId,
+    routeVersion: group.routeVersion,
+  });
+  for (const ride of remainingRides) {
+    emitToRoom(getRideRoom(ride._id), 'pool.member.left', {
+      message: 'A co-rider left the shared ride.',
       routeVersion: group.routeVersion,
     });
-
-    for (const ride of remainingRides) {
-      emitToRoom(getRideRoom(ride._id), 'pool.member.left', {
-        message: 'A co-rider left the shared ride.',
-        routeVersion: group.routeVersion,
-      });
-    }
-
-    broadcastPoolUpdate(group);
   }
+
+  broadcastPoolUpdate(group);
 };
 
 /**
@@ -311,13 +390,21 @@ export const completePassengerRide = async (rideId) => {
     ride.driverEarnings = driverEarnings;
     await ride.save({ session });
 
+    // ponytail: mirror the non-pool settlement (walletService) — for CASH rides the driver
+    // already collected the fare in hand, so the wallet must be DEBITED the commission, not
+    // credited the earnings (otherwise the driver is paid twice and the platform loses its cut).
+    const isCash = String(ride.paymentMethod || '').toLowerCase() === 'cash';
+    const walletAmount = isCash ? -adminCommission : driverEarnings;
+
     // Update driver wallet balance
     const walletRef = `pool-completion:${rideId}`;
     await applyDriverWalletAdjustmentByReference({
       driverId: ride.driverId,
-      amount: driverEarnings,
+      amount: walletAmount,
       rideId: ride._id,
-      description: `Earnings for pooled ride ${String(ride._id).slice(-6)}`,
+      description: isCash
+        ? `Commission for cash pooled ride ${String(ride._id).slice(-6)}`
+        : `Earnings for pooled ride ${String(ride._id).slice(-6)}`,
       referenceKey: walletRef,
       session,
     });
@@ -334,38 +421,29 @@ export const completePassengerRide = async (rideId) => {
   }
 
   if (ride.poolGroupId) {
-    const group = await InstantPoolGroup.findById(ride.poolGroupId);
+    // Atomic detach (pull + seat dec + version bump) — safe under concurrent drops/completions.
+    const group = await detachRideFromGroupAtomic(ride.poolGroupId, rideId, ride.poolSeats || 1);
     if (group) {
-      // Mark drop stop as completed and drop from active list
-      group.routeSequence = group.routeSequence.map(stop => {
-        if (String(stop.rideId) === String(rideId) && stop.type === 'drop') {
-          return { ...stop, status: 'completed' };
-        }
-        return stop;
-      });
-      group.activeRides = group.activeRides.filter(id => String(id) !== String(rideId));
-      group.occupiedSeats = Math.max(0, group.occupiedSeats - (ride.poolSeats || 1));
-      group.routeVersion += 1;
-
       if (group.activeRides.length === 0) {
-        group.status = 'completed';
-        await group.save();
-
-        // Release driver
-        await Driver.findByIdAndUpdate(group.driverId, {
-          isOnRide: false,
-          activePoolGroupId: null,
-          poolOccupiedSeats: 0,
-          activePoolRideCount: 0,
-        });
-
-        emitToRoom(getDriverRoom(group.driverId), 'pool.closed', {
-          poolGroupId: group._id,
-          routeVersion: group.routeVersion
-        });
-        auditLog('Pool Closed', { poolGroupId: group._id });
+        const closed = await closePoolGroup(group);
+        if (closed) {
+          emitToRoom(getDriverRoom(group.driverId), 'pool.closed', {
+            poolGroupId: group._id,
+            routeVersion: group.routeVersion,
+          });
+          auditLog('Pool Closed', { poolGroupId: group._id });
+        }
       } else {
-        await group.save();
+        // Mark this ride's drop stop completed and persist routeSequence via targeted $set.
+        const newSeq = (group.routeSequence || []).map((stop) => {
+          const s = stop?.toObject ? stop.toObject() : stop;
+          return (String(s.rideId) === String(rideId) && s.type === 'drop')
+            ? { ...s, status: 'completed' }
+            : s;
+        });
+        await InstantPoolGroup.updateOne({ _id: group._id }, { $set: { routeSequence: newSeq } });
+        group.routeSequence = newSeq;
+
         await Driver.findByIdAndUpdate(group.driverId, {
           poolOccupiedSeats: group.occupiedSeats,
           activePoolRideCount: group.activeRides.length,

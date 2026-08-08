@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import mongoose from 'mongoose';
 import { FoodOrder } from '../../../modules/food/orders/models/order.model.js';
 import * as foodTransactionService from '../../../modules/food/orders/services/foodTransaction.service.js';
+import { notifyRestaurantNewOrder } from '../../../modules/food/orders/services/order.helpers.js';
 import { config } from '../../../config/env.js';
 import { logger } from '../../../utils/logger.js';
 
@@ -39,17 +40,29 @@ export const handleRazorpayWebhook = async (req, res) => {
             const rzOrderId = paymentObj.order_id;
             const rzPaymentId = paymentObj.id;
 
-            // Atomic update to mark as paid if not already
+            // Atomic update to mark as paid if not already. Winning this update means the
+            // client-driven /verify hasn't run yet, so we must ALSO advance the order out of
+            // pending_payment and notify the restaurant — otherwise a captured order is stranded.
             const order = await FoodOrder.findOneAndUpdate(
-                { 
-                    "payment.razorpay.orderId": rzOrderId, 
-                    "payment.status": { $ne: 'paid' } 
+                {
+                    "payment.razorpay.orderId": rzOrderId,
+                    "payment.status": { $ne: 'paid' }
                 },
-                { 
-                    $set: { 
-                        "payment.status": 'paid', 
-                        "payment.razorpay.paymentId": rzPaymentId 
-                    } 
+                {
+                    $set: {
+                        "payment.status": 'paid',
+                        "payment.razorpay.paymentId": rzPaymentId,
+                        "orderStatus": 'created'
+                    },
+                    $push: {
+                        statusHistory: {
+                            at: new Date(),
+                            byRole: 'SYSTEM',
+                            from: 'pending_payment',
+                            to: 'created',
+                            note: 'Payment captured via webhook'
+                        }
+                    }
                 },
                 { new: true }
             );
@@ -64,6 +77,12 @@ export const handleRazorpayWebhook = async (req, res) => {
                     });
                 } catch (ledgerErr) {
                     logger.error(`Webhook Ledger Error (Order ${order.orderId}): ${ledgerErr.message}`);
+                }
+                // Notify restaurant (idempotent-ish: only reached when webhook won the paid race).
+                try {
+                    await notifyRestaurantNewOrder(order);
+                } catch (notifyErr) {
+                    logger.error(`Webhook Restaurant Notify Error (Order ${order.orderId}): ${notifyErr.message}`);
                 }
                 logger.info(`Webhook [payment.captured]: Synced Order ${order.orderId} (Status=paid)`);
             } else {

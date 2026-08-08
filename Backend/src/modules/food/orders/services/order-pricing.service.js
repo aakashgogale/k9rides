@@ -7,8 +7,63 @@ import { FoodOfferUsage } from '../../admin/models/offerUsage.model.js';
 import { FoodDeliverySurgeZone } from '../../admin/models/deliverySurgeZone.model.js';
 import { FoodDeliveryCommissionRule } from '../../admin/models/deliveryCommissionRule.model.js';
 import { FoodZone } from '../../admin/models/zone.model.js';
+import { FoodItem } from '../../admin/models/food.model.js';
 import { ValidationError } from '../../../../core/auth/errors.js';
 import { haversineKm } from './order.helpers.js';
+
+const MAX_ITEM_QTY = 50;
+
+/**
+ * Resolves order items against the restaurant's live menu and returns copies with
+ * SERVER-authoritative prices/names. Never trust client-supplied prices: without this
+ * a client could post price:1 for an expensive dish and be charged ₹1.
+ * Also validates ownership, availability, variant, and quantity bounds.
+ * @param {string|import('mongoose').Types.ObjectId} restaurantId
+ * @param {Array<object>} items
+ * @returns {Promise<Array<object>>}
+ */
+export async function resolveAuthoritativeItems(restaurantId, items) {
+  const list = Array.isArray(items) ? items : [];
+  if (list.length === 0) throw new ValidationError('Order must contain at least one item');
+
+  const ids = [...new Set(list.map((it) => String(it?.itemId || '')).filter(Boolean))]
+    .filter((id) => mongoose.isValidObjectId(id));
+  if (ids.length === 0) throw new ValidationError('Invalid order items');
+
+  const menuItems = await FoodItem.find({ _id: { $in: ids }, restaurantId }).lean();
+  const byId = new Map(menuItems.map((m) => [String(m._id), m]));
+
+  return list.map((it) => {
+    const menu = byId.get(String(it?.itemId || ''));
+    if (!menu) throw new ValidationError('One or more items are not available at this restaurant');
+    if (menu.isActive === false || menu.isAvailable === false || menu.approvalStatus !== 'approved') {
+      throw new ValidationError(`"${menu.name}" is currently unavailable`);
+    }
+
+    const qty = Number(it?.quantity);
+    if (!Number.isInteger(qty) || qty < 1 || qty > MAX_ITEM_QTY) {
+      throw new ValidationError(`Invalid quantity for "${menu.name}" (1-${MAX_ITEM_QTY} allowed)`);
+    }
+
+    let price = Number(menu.price);
+    let variantName = '';
+    if (it?.variantId) {
+      const variant = (menu.variants || []).find((v) => String(v._id) === String(it.variantId));
+      if (!variant) throw new ValidationError(`Selected option for "${menu.name}" is not available`);
+      price = Number(variant.price);
+      variantName = variant.name;
+    }
+
+    return {
+      ...it,
+      itemId: menu._id,
+      name: menu.name,
+      price,
+      quantity: qty,
+      variantName: variantName || it?.variantName || '',
+    };
+  });
+}
 
 function extractCoords(addressLike) {
   const coords = addressLike?.location?.coordinates;
@@ -85,7 +140,9 @@ export async function calculateOrderPricing(userId, dto) {
   if (restaurant.status !== "approved")
     throw new ValidationError("Restaurant not available");
 
-  const items = Array.isArray(dto.items) ? dto.items : [];
+  // Resolve prices from the live menu — never trust client-supplied item prices.
+  const items = await resolveAuthoritativeItems(dto.restaurantId, dto.items);
+  dto.items = items;
   const subtotal = items.reduce(
     (sum, it) => sum + (Number(it.price) || 0) * (Number(it.quantity) || 1),
     0,

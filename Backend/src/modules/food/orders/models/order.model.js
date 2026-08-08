@@ -306,6 +306,12 @@ const orderSchema = new mongoose.Schema(
         lastRiderLocation: {
             type: { type: String, enum: ['Point'] },
             coordinates: { type: [Number] }
+        },
+        /** PetPooja POS invoice data captured on successful sync */
+        petpooja: {
+            orderId: { type: String, default: '' },
+            invoiceNo: { type: String, default: '' },
+            invoiceUrl: { type: String, default: '' }
         }
     },
     {

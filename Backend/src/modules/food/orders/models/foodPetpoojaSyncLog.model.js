@@ -11,6 +11,8 @@ const foodPetpoojaSyncLogSchema = new mongoose.Schema(
         payloadSent: { type: mongoose.Schema.Types.Mixed },
         responseReceived: { type: mongoose.Schema.Types.Mixed },
         petpoojaOrderId: { type: String, default: '', index: true },
+        invoiceNo: { type: String, default: '' },
+        invoiceUrl: { type: String, default: '' },
     },
     { collection: 'food_petpooja_sync_logs', timestamps: true }
 );

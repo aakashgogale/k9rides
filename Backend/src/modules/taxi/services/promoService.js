@@ -66,8 +66,10 @@ const isUserEligibleForPromoAudience = async ({ promo, userId }) => {
       return { eligible: false, reason: 'USER_REQUIRED', message: 'User is required for this promo code' };
     }
 
-    const hasAnyRide = await Ride.exists({ userId: toObjectIdOrThrow(userId, 'user id') });
-    if (hasAnyRide) {
+    // ponytail: "new user" = no COMPLETED rides. Counting any ride (incl. searching/cancelled)
+    // permanently locked out users whose only prior ride auto-cancelled while unmatched.
+    const hasCompletedRide = await Ride.exists({ userId: toObjectIdOrThrow(userId, 'user id'), status: 'completed' });
+    if (hasCompletedRide) {
       return { eligible: false, reason: 'NEW_USERS_ONLY', message: 'Promo code is only valid for new users' };
     }
   }
@@ -438,13 +440,13 @@ export const listAvailablePromosForUser = async ({
 
   const promos = await PromoCode.find(query).sort({ createdAt: -1 }).limit(safeLimit).lean();
   const userObjectId = userId && mongoose.isValidObjectId(userId) ? toObjectIdOrThrow(userId, 'user id') : null;
-  const hasAnyRide = userObjectId ? Boolean(await Ride.exists({ userId: userObjectId })) : false;
+  const hasCompletedRide = userObjectId ? Boolean(await Ride.exists({ userId: userObjectId, status: 'completed' })) : false;
 
   return promos
     .filter((promo) => {
       const audienceType = getPromoAudienceType(promo);
       if (audienceType === 'new_users') {
-        return userObjectId ? !hasAnyRide : false;
+        return userObjectId ? !hasCompletedRide : false;
       }
       if (audienceType === 'specific_user') {
         return userId ? String(promo.user_id || '') === String(userId) : false;

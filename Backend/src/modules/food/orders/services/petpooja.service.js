@@ -5,17 +5,40 @@ import { FoodRestaurant } from '../../restaurant/models/restaurant.model.js';
 import { FoodPetpoojaSyncLog } from '../models/foodPetpoojaSyncLog.model.js';
 import { logger } from '../../../../utils/logger.js';
 import { config } from '../../../../config/env.js';
+import { FoodPetpoojaSettings } from '../../admin/models/petpoojaSettings.model.js';
 import { addOrderJob } from '../../../../queues/producers/order.producer.js';
 
 
 /**
+ * Resolves the platform's global PetPooja credentials.
+ * DB (admin-managed singleton) is the source of truth; any blank field falls
+ * back to the corresponding env var so existing env-based deploys keep working.
+ * @returns {Promise<{enabled:boolean, apiKey:string, clientCode:string, apiUrl:string}>}
+ */
+export async function getPetpoojaSettings() {
+    let doc = null;
+    try {
+        doc = await FoodPetpoojaSettings.findOne().lean();
+    } catch (err) {
+        logger.error(`[Petpooja] Failed to load settings, falling back to env: ${err.message}`);
+    }
+    return {
+        enabled: doc ? Boolean(doc.enabled) : config.petpoojaEnabled,
+        apiKey: (doc && doc.apiKey) || config.petpoojaApiKey,
+        clientCode: (doc && doc.clientCode) || config.petpoojaClientCode,
+        apiUrl: (doc && doc.apiUrl) || config.petpoojaApiUrl,
+    };
+}
+
+/**
  * Checks if Petpooja is enabled globally and for the specific restaurant.
  * Returns the restaurant configuration if active.
- * @param {string} restaurantId 
+ * @param {string} restaurantId
+ * @param {object} settings resolved global PetPooja settings
  * @returns {Promise<object|null>}
  */
-async function getActiveRestaurantConfig(restaurantId) {
-    if (!config.petpoojaEnabled) {
+async function getActiveRestaurantConfig(restaurantId, settings) {
+    if (!settings.enabled || !settings.apiKey || !settings.clientCode) {
         return null;
     }
     try {
@@ -34,13 +57,14 @@ async function getActiveRestaurantConfig(restaurantId) {
 
 /**
  * Builds standard Petpooja POST request headers.
+ * @param {object} settings resolved global PetPooja settings
  * @returns {object}
  */
-function getHeaders() {
+function getHeaders(settings) {
     return {
         'Content-Type': 'application/json',
-        'app-key': config.petpoojaApiKey,
-        'client-code': config.petpoojaClientCode
+        'app-key': settings.apiKey,
+        'client-code': settings.clientCode
     };
 }
 
@@ -58,7 +82,8 @@ export async function pushOrderToPetpooja(orderMongoId) {
             return;
         }
 
-        const restConfig = await getActiveRestaurantConfig(order.restaurantId);
+        const settings = await getPetpoojaSettings();
+        const restConfig = await getActiveRestaurantConfig(order.restaurantId, settings);
         if (!restConfig) {
             logger.debug(`[Petpooja] Sync skipped: Petpooja disabled for restaurant ${order.restaurantId} or globally.`);
             return;
@@ -87,8 +112,8 @@ export async function pushOrderToPetpooja(orderMongoId) {
 
         // Build Petpooja Payload
         const payload = {
-            app_key: config.petpoojaApiKey,
-            client_code: config.petpoojaClientCode,
+            app_key: settings.apiKey,
+            client_code: settings.clientCode,
             outlet_code: restConfig.petpoojaOutletId,
             primary: {
                 order_id: order.order_id || order._id.toString(),
@@ -126,12 +151,12 @@ export async function pushOrderToPetpooja(orderMongoId) {
         syncLog.payloadSent = payload;
 
         // Perform request
-        const url = `${config.petpoojaApiUrl.replace(/\/$/, '')}/SaveOrder`;
+        const url = `${settings.apiUrl.replace(/\/$/, '')}/SaveOrder`;
         logger.info(`[Petpooja] Pushing order ${order.order_id} to POS URL: ${url}`);
-        
+
         const response = await fetch(url, {
             method: 'POST',
-            headers: getHeaders(),
+            headers: getHeaders(settings),
             body: JSON.stringify(payload),
             timeout: 15000 // 15 seconds timeout
         });
@@ -150,8 +175,19 @@ export async function pushOrderToPetpooja(orderMongoId) {
         if (response.status === 200 && (resJson.success === true || resJson.status === 'success' || resJson.success === '1')) {
             syncLog.status = 'success';
             syncLog.petpoojaOrderId = resJson.petpooja_order_id || resJson.order_id || '';
+            // Capture invoice data (field names vary across PetPooja plans/versions)
+            syncLog.invoiceNo = resJson.invoice_no || resJson.invoiceNo || resJson.invoice_number || '';
+            syncLog.invoiceUrl = resJson.invoice_url || resJson.invoiceUrl || resJson.invoice_pdf || '';
             syncLog.error = '';
-            logger.info(`[Petpooja] Order ${order.order_id} synced successfully. Petpooja ID: ${syncLog.petpoojaOrderId}`);
+            await FoodOrder.updateOne(
+                { _id: order._id },
+                { $set: { petpooja: {
+                    orderId: syncLog.petpoojaOrderId,
+                    invoiceNo: syncLog.invoiceNo,
+                    invoiceUrl: syncLog.invoiceUrl,
+                } } }
+            ).catch(e => logger.error(`[Petpooja] Failed to stamp invoice on order ${order.order_id}: ${e.message}`));
+            logger.info(`[Petpooja] Order ${order.order_id} synced successfully. Petpooja ID: ${syncLog.petpoojaOrderId}, Invoice: ${syncLog.invoiceNo}`);
         } else {
             // Check for specific duplicate order errors
             const isDuplicate = resText.toLowerCase().includes('duplicate') || 
@@ -192,7 +228,8 @@ export async function updateOrderStatusInPetpooja(orderMongoId, status) {
         const order = await FoodOrder.findById(orderMongoId).lean();
         if (!order) return;
 
-        const restConfig = await getActiveRestaurantConfig(order.restaurantId);
+        const settings = await getPetpoojaSettings();
+        const restConfig = await getActiveRestaurantConfig(order.restaurantId, settings);
         if (!restConfig) return;
 
         // Fetch sync log to see if it was pushed successfully
@@ -219,8 +256,8 @@ export async function updateOrderStatusInPetpooja(orderMongoId, status) {
         }
 
         const payload = {
-            app_key: config.petpoojaApiKey,
-            client_code: config.petpoojaClientCode,
+            app_key: settings.apiKey,
+            client_code: settings.clientCode,
             outlet_code: restConfig.petpoojaOutletId,
             order_id: order.order_id || order._id.toString(),
             petpooja_order_id: log.petpoojaOrderId || '',
@@ -228,12 +265,12 @@ export async function updateOrderStatusInPetpooja(orderMongoId, status) {
             cancel_reason: order.statusHistory?.slice(-1)[0]?.note || ''
         };
 
-        const url = `${config.petpoojaApiUrl.replace(/\/$/, '')}/UpdateOrderStatus`;
+        const url = `${settings.apiUrl.replace(/\/$/, '')}/UpdateOrderStatus`;
         logger.info(`[Petpooja] Updating order ${order.order_id} status on POS to '${petpoojaStatus}'`);
 
         const response = await fetch(url, {
             method: 'POST',
-            headers: getHeaders(),
+            headers: getHeaders(settings),
             body: JSON.stringify(payload),
             timeout: 10000
         });

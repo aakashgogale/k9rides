@@ -19,7 +19,8 @@ import {
     createRazorpayCheckoutOrder,
     verifyPaymentSignature,
     isRazorpayConfigured,
-    initiateRazorpayRefund
+    initiateRazorpayRefund,
+    fetchRazorpayPayment
 } from '../helpers/razorpay.helper.js';
 import { getIO, rooms } from '../../../../config/socket.js';
 import { addOrderJob } from '../../../../queues/producers/order.producer.js';
@@ -27,7 +28,7 @@ import { fetchPolyline } from '../utils/googleMaps.js';
 import { getFirebaseDB } from '../../../../config/firebase.js';
 import * as foodTransactionService from './foodTransaction.service.js';
 import * as userWalletService from '../../user/services/userWallet.service.js';
-import { calculateOrderPricing, resolveOrderZoneId } from './order-pricing.service.js';
+import { calculateOrderPricing, resolveOrderZoneId, resolveAuthoritativeItems } from './order-pricing.service.js';
 import * as dispatchService from './order-dispatch.service.js';
 import * as deliveryService from './order-delivery.service.js';
 import * as paymentService from './order-payment.service.js';
@@ -127,6 +128,10 @@ export async function createOrder(userId, dto) {
       }
     }
 
+    // Resolve server-authoritative prices from the live menu before anything reads dto.items
+    // (the saved order.items, subtotal, and payout math all derive from this).
+    dto.items = await resolveAuthoritativeItems(restaurantId, dto.items);
+
     // Ensure pricing is present and consistent.
     const computedSubtotal = (dto.items || []).reduce((sum, item) => {
       const price = Number(item?.price);
@@ -208,24 +213,26 @@ export async function createOrder(userId, dto) {
       const { getDeliveryPartnerWalletEnhanced } = await import('../../delivery/services/deliveryFinance.service.js');
       const onlinePartners = await FoodDeliveryPartner.find({ availabilityStatus: 'online' }).lean();
       
-      let maxAvailableCashLimit = 0;
-      const effectiveCodLimit = codOrderLimit ?? Infinity;
-      
+      // ponytail: with zero online partners there is nobody who can collect the cash, so COD
+      // must be rejected — NOT treated as an unlimited cash limit (the old behaviour let COD
+      // orders through with no courier able to fulfil them). availabilityStatus is a maintained
+      // enum (online/offline), so an empty result reliably means "no one online".
       if (onlinePartners.length === 0) {
-        maxAvailableCashLimit = effectiveCodLimit;
-      } else {
-        for (const partner of onlinePartners) {
-          try {
-            const wallet = await getDeliveryPartnerWalletEnhanced(partner._id);
-            if (wallet.availableCashLimit > maxAvailableCashLimit) {
-              maxAvailableCashLimit = wallet.availableCashLimit;
-            }
-          } catch (e) {
-            // Ignore
+        throw new ValidationError("Cash on Delivery is currently unavailable as no delivery partners are online.");
+      }
+
+      let maxAvailableCashLimit = 0;
+      for (const partner of onlinePartners) {
+        try {
+          const wallet = await getDeliveryPartnerWalletEnhanced(partner._id);
+          if (wallet.availableCashLimit > maxAvailableCashLimit) {
+            maxAvailableCashLimit = wallet.availableCashLimit;
           }
+        } catch (e) {
+          // Ignore
         }
       }
-      
+
       if (normalizedPricing.total > maxAvailableCashLimit) {
         throw new ValidationError("Cash on Delivery is currently unavailable due to delivery partner wallet limits.");
       }
@@ -328,16 +335,14 @@ export async function createOrder(userId, dto) {
       }
     }
 
-    await order.save();
-
     if (isWallet) {
-      try {
-        await userWalletService.deductWalletBalance(userId, order.pricing.total, `Payment for order #${order.order_id || order._id}`, { orderId: order._id });
-      } catch (err) {
-        await FoodOrder.deleteOne({ _id: order._id });
-        throw err;
-      }
+      // ponytail: debit the wallet BEFORE persisting the order. Saving a 'paid' wallet order and
+      // deducting afterwards left a window where a crash produced a paid order with no debit.
+      // order._id exists at instantiation, so the ledger reference is valid pre-save.
+      await userWalletService.deductWalletBalance(userId, order.pricing.total, `Payment for order #${order.order_id || order._id}`, { orderId: order._id });
     }
+
+    await order.save();
 
     // Phase 2: Create initial transaction (Non-blocking but logged)
     try {
@@ -375,13 +380,23 @@ export async function createOrder(userId, dto) {
       logger.warn(`Notifications failed for order ${order._id}: ${err.message}`);
     }
 
-    // Handle Coupon usage
-    const couponCode = dto.pricing?.couponCode ? String(dto.pricing.couponCode).trim().toUpperCase() : "";
-    if (couponCode) {
+    // Handle Coupon usage — base it on the coupon the SERVER actually applied (not a client
+    // field, which used to be stripped so usage never incremented / discount was dropped), and
+    // enforce the global usage cap atomically so it can't be exceeded under concurrency.
+    const appliedCouponCode = normalizedPricing.appliedCoupon?.code
+      ? String(normalizedPricing.appliedCoupon.code).trim().toUpperCase()
+      : "";
+    if (appliedCouponCode) {
       try {
-        const offer = await FoodOffer.findOne({ couponCode }).lean();
+        const offer = await FoodOffer.findOne({ couponCode: appliedCouponCode }).lean();
         if (offer) {
-          await FoodOffer.updateOne({ _id: offer._id }, { $inc: { usedCount: 1 } });
+          const capFilter = Number(offer.usageLimit) > 0
+            ? { _id: offer._id, usedCount: { $lt: Number(offer.usageLimit) } }
+            : { _id: offer._id };
+          const incRes = await FoodOffer.updateOne(capFilter, { $inc: { usedCount: 1 } });
+          if (incRes.matchedCount === 0) {
+            logger.warn(`Coupon ${appliedCouponCode} hit its usage limit during a concurrent order (order ${order._id}).`);
+          }
           await FoodOfferUsage.updateOne(
             { offerId: offer._id, userId: toObjectId(userId, 'User ID') },
             { $inc: { count: 1 }, $set: { lastUsedAt: new Date() } },
@@ -418,12 +433,38 @@ export async function verifyPayment(userId, dto) {
   if (order.payment.status === "paid")
     return { order: normalizeOrderForClient(order), payment: order.payment };
 
+  // Bind the signature to THIS order's Razorpay order id. Without this, a valid
+  // signature from any other (e.g. cheap) order could be replayed to mark this one paid.
+  const expectedRzpOrderId = order.payment?.razorpay?.orderId;
+  if (!expectedRzpOrderId || String(dto.razorpayOrderId) !== String(expectedRzpOrderId)) {
+    throw new ValidationError("Payment verification failed: order mismatch");
+  }
+
   const valid = verifyPaymentSignature(
     dto.razorpayOrderId,
     dto.razorpayPaymentId,
     dto.razorpaySignature,
   );
   if (!valid) throw new ValidationError("Payment verification failed");
+
+  // Confirm the payment was actually captured for the amount we charged (skips mock payments in dev).
+  if (!String(dto.razorpayPaymentId || "").startsWith("mock_")) {
+    try {
+      const rzpPayment = await fetchRazorpayPayment(dto.razorpayPaymentId);
+      const capturedPaise = Number(rzpPayment?.amount || 0);
+      const expectedPaise = Math.round(Number(order.payment.amountDue || 0) * 100);
+      const capturedOk = ["captured", "authorized"].includes(String(rzpPayment?.status || ""));
+      if (String(rzpPayment?.order_id || "") !== String(expectedRzpOrderId)) {
+        throw new ValidationError("Payment verification failed: order mismatch");
+      }
+      if (!capturedOk || capturedPaise < expectedPaise) {
+        throw new ValidationError("Payment verification failed: amount or status mismatch");
+      }
+    } catch (err) {
+      if (err instanceof ValidationError) throw err;
+      throw new ValidationError("Unable to verify payment with gateway. Please try again.");
+    }
+  }
 
   order.payment.status = "paid";
   order.payment.razorpay.paymentId = dto.razorpayPaymentId;
@@ -680,6 +721,61 @@ export async function resyncState(userId, role) {
   return {};
 }
 
+/**
+ * Idempotently refunds a paid order at most once. Atomically claims the refund
+ * (none/failed -> pending) before calling the gateway, so a restaurant-cancel racing a
+ * user-cancel/webhook can't both issue a refund. Mirrors the authoritative state back onto
+ * the in-memory `order` so the caller's trailing save() doesn't clobber it.
+ * @param {import('mongoose').Document} order
+ * @param {string|import('mongoose').Types.ObjectId} refundUserId user to credit for wallet refunds
+ */
+async function processOrderRefundOnce(order, refundUserId) {
+  if (String(order.payment?.status || "").toLowerCase() !== "paid") return;
+  const method = String(order.payment?.method || "").toLowerCase();
+  if (method !== "razorpay" && method !== "wallet") return;
+  if (method === "razorpay" && !order.payment?.razorpay?.paymentId) return;
+
+  // Atomic claim — only the first caller flips refund.status into 'pending'.
+  const claimed = await FoodOrder.findOneAndUpdate(
+    {
+      _id: order._id,
+      "payment.status": "paid",
+      "payment.refund.status": { $nin: ["pending", "processed"] },
+    },
+    { $set: { "payment.refund.status": "pending", "payment.refund.amount": order.pricing.total } },
+    { new: true },
+  );
+  if (!claimed) {
+    // Another flow owns the refund; sync in-memory state from DB to avoid clobbering on save().
+    const fresh = await FoodOrder.findById(order._id).select("payment").lean();
+    if (fresh?.payment) {
+      order.payment.status = fresh.payment.status;
+      order.payment.refund = fresh.payment.refund;
+    }
+    return;
+  }
+
+  let refundPatch;
+  try {
+    if (method === "razorpay") {
+      const refundResult = await initiateRazorpayRefund(order.payment.razorpay.paymentId, order.pricing.total);
+      refundPatch = refundResult.success
+        ? { "payment.status": "refunded", "payment.refund": { status: "processed", amount: order.pricing.total, refundId: refundResult.refundId, processedAt: new Date() } }
+        : { "payment.refund": { status: "failed", amount: order.pricing.total } };
+    } else {
+      await userWalletService.refundWalletBalance(refundUserId, order.pricing.total, `Refund for cancelled order #${order.order_id || order._id}`, { orderId: order._id });
+      refundPatch = { "payment.status": "refunded", "payment.refund": { status: "processed", amount: order.pricing.total, processedAt: new Date() } };
+    }
+  } catch (err) {
+    logger.error(`Refund processing error for Order ${order._id}: ${err.message}`);
+    refundPatch = { "payment.refund": { status: "failed", amount: order.pricing.total } };
+  }
+
+  await FoodOrder.updateOne({ _id: order._id }, { $set: refundPatch });
+  if (refundPatch["payment.status"]) order.payment.status = refundPatch["payment.status"];
+  order.payment.refund = refundPatch["payment.refund"];
+}
+
 export async function cancelOrder(orderId, userId, reason) {
   const identity = buildOrderIdentityFilter(orderId);
   if (!identity) throw new ValidationError("Order id required");
@@ -706,59 +802,9 @@ export async function cancelOrder(orderId, userId, reason) {
 
   const paymentMethod = String(order.payment?.method || "cash").toLowerCase();
   const paymentStatus = String(order.payment?.status || "cod_pending").toLowerCase();
-  const hasRefundProcessed =
-    String(order.payment?.refund?.status || "none").toLowerCase() === "processed";
 
-  // ✅ NEW: Automated Razorpay Refund on User Cancel
-  if (
-    paymentStatus === "paid" &&
-    paymentMethod === "razorpay" &&
-    order.payment?.razorpay?.paymentId &&
-    !hasRefundProcessed
-  ) {
-    try {
-      const refundResult = await initiateRazorpayRefund(
-        order.payment.razorpay.paymentId,
-        order.pricing.total
-      );
-
-      if (refundResult.success) {
-        order.payment.status = "refunded";
-        order.payment.refund = {
-          status: "processed",
-          amount: order.pricing.total,
-          refundId: refundResult.refundId,
-          processedAt: new Date()
-        };
-      } else {
-        // Log failure but let order cancellation proceed
-        order.payment.refund = {
-          status: "failed",
-          amount: order.pricing.total
-        };
-      }
-    } catch (err) {
-      console.error(`Refund processing error for Order ${orderId}:`, err);
-      order.payment.refund = { status: "failed", amount: order.pricing.total };
-    }
-  } else if (
-    paymentStatus === "paid" &&
-    paymentMethod === "wallet" &&
-    !hasRefundProcessed
-  ) {
-    try {
-      await userWalletService.refundWalletBalance(userId, order.pricing.total, `Refund for cancelled order #${order.order_id || order._id}`, { orderId: order._id });
-      order.payment.status = "refunded";
-      order.payment.refund = {
-        status: "processed",
-        amount: order.pricing.total,
-        processedAt: new Date()
-      };
-    } catch (err) {
-      console.error(`Wallet refund processing error for Order ${orderId}:`, err);
-      order.payment.refund = { status: "failed", amount: order.pricing.total };
-    }
-  }
+  // Automated refund on user cancel — idempotent + race-safe (see processOrderRefundOnce).
+  await processOrderRefundOnce(order, userId);
 
   await order.save();
 
@@ -955,6 +1001,20 @@ export async function updateOrderStatusRestaurant(
     restaurantId: new mongoose.Types.ObjectId(restaurantId),
   });
   if (!order) throw new NotFoundError("Order not found");
+
+  // A restaurant may only drive the kitchen-side statuses. picked_up / delivered are owned by
+  // the delivery flow (partner assignment + drop-OTP in completeDelivery) and must not be
+  // settable here, or a restaurant could mark an order delivered with no courier/OTP.
+  const RESTAURANT_ALLOWED_STATUSES = new Set([
+    "confirmed",
+    "preparing",
+    "ready_for_pickup",
+    "cancelled_by_restaurant",
+  ]);
+  if (!RESTAURANT_ALLOWED_STATUSES.has(orderStatus)) {
+    throw new ValidationError(`Restaurants cannot set order status to '${orderStatus}'.`);
+  }
+
   const from = order.orderStatus;
   if (!isStatusAdvance(from, orderStatus)) {
     throw new ValidationError(
@@ -1132,59 +1192,9 @@ export async function updateOrderStatusRestaurant(
 
     // ✅ NEW: Automated Razorpay Refund on Restaurant Cancel
     // Triggers if the restaurant sets status to a cancelled state (e.g., cancelled_by_restaurant)
-    if (
-      String(orderStatus).includes("cancel") &&
-      order.payment.status === "paid" &&
-      order.payment.method === "razorpay" &&
-      order.payment.razorpay?.paymentId &&
-      (!order.payment.refund || order.payment.refund.status !== "processed")
-    ) {
-      try {
-        const refundResult = await initiateRazorpayRefund(
-          order.payment.razorpay.paymentId,
-          order.pricing.total
-        );
-
-        if (refundResult.success) {
-          order.payment.status = "refunded";
-          order.payment.refund = {
-            status: "processed",
-            amount: order.pricing.total,
-            refundId: refundResult.refundId,
-            processedAt: new Date()
-          };
-        } else {
-          // Record failure so admin knows a manual refund might be needed
-          order.payment.refund = {
-            status: "failed",
-            amount: order.pricing.total
-          };
-        }
-      } catch (err) {
-        console.error(`Automated refund failed for Order ${order._id.toString()} (Restaurant Cancel):`, err);
-        order.payment.refund = { status: "failed", amount: order.pricing.total };
-      }
-      // Re-save order with updated payment status
-      await order.save();
-    } else if (
-      String(orderStatus).includes("cancel") &&
-      order.payment.status === "paid" &&
-      order.payment.method === "wallet" &&
-      (!order.payment.refund || order.payment.refund.status !== "processed")
-    ) {
-      try {
-        await userWalletService.refundWalletBalance(order.userId, order.pricing.total, `Refund for order #${order.order_id || order._id} cancelled by restaurant`, { orderId: order._id });
-        order.payment.status = "refunded";
-        order.payment.refund = {
-          status: "processed",
-          amount: order.pricing.total,
-          processedAt: new Date()
-        };
-      } catch (err) {
-        console.error(`Wallet refund processing error for Order ${order._id.toString()}:`, err);
-        order.payment.refund = { status: "failed", amount: order.pricing.total };
-      }
-      // Re-save order with updated payment status
+    // Automated refund on restaurant cancel — idempotent + race-safe (see processOrderRefundOnce).
+    if (String(orderStatus).includes("cancel")) {
+      await processOrderRefundOnce(order, order.userId);
       await order.save();
     }
 
