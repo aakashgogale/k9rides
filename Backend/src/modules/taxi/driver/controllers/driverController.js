@@ -2480,6 +2480,11 @@ export const getCurrentDriver = async (req, res) => {
       deletionRequest: driver.deletionRequest || { status: "none" },
       isOnline: driver.isOnline,
       isOnRide: driver.isOnRide,
+      // Driver unification: drives the All/Rides/Food work-mode toggle in the driver app.
+      workMode: driver.workMode || 'all',
+      serviceCapabilities: Array.isArray(driver.serviceCapabilities) && driver.serviceCapabilities.length
+        ? driver.serviceCapabilities
+        : ['taxi'],
       onlineSelfie: driver.onlineSelfie || {},
       location: driver.location,
       zoneId: driver.zoneId,
