@@ -34,6 +34,7 @@ import MapGrid from '@/assets/premium_grid_map.png';
 import DriverBottomNav from '../../shared/components/DriverBottomNav';
 import IncomingRideRequest from './IncomingRideRequest';
 import api from '../../../shared/api/axiosInstance';
+import WorkModeToggle from '../components/WorkModeToggle';
 import { useSettings } from '../../../shared/context/SettingsContext';
 import { uploadService } from '../../../shared/services/uploadService';
 import { BACKEND_ORIGIN } from '../../../shared/api/runtimeConfig';
@@ -585,6 +586,8 @@ const DriverHome = () => {
     const storedDriverInfo = useMemo(() => readStoredDriverInfo(), []);
     const [isOwnerManagedDriver, setIsOwnerManagedDriver] = useState(() => isOwnerManagedDriverProfile(storedDriverInfo));
     const [isOnline, setIsOnline] = useState(false);
+    const [workMode, setWorkMode] = useState('all');
+    const [serviceCapabilities, setServiceCapabilities] = useState([]);
     const [showRequest, setShowRequest] = useState(false);
     const [showLowBalanceModal, setShowLowBalanceModal] = useState(false);
     const [showCancelledTripModal, setShowCancelledTripModal] = useState(false);
@@ -928,6 +931,8 @@ const DriverHome = () => {
         setVehicleIconType(driver?.vehicleIconType || driver?.vehicleType || 'car');
         setVehicleIconUrl(driver?.vehicleIconUrl || '');
         setIsOnline(Boolean(driver?.isOnline));
+        if (driver?.workMode) setWorkMode(driver.workMode);
+        if (Array.isArray(driver?.serviceCapabilities)) setServiceCapabilities(driver.serviceCapabilities);
         setIsOwnerManagedDriver(isOwnerManagedDriverProfile(driver));
         setTodaySummary(normalizeTodaySummary(driver?.todaySummary));
         if (driver?.wallet) {
@@ -2402,8 +2407,8 @@ const DriverHome = () => {
                     </button>
                 </div>
 
-                {/* Center: Duty Toggle */}
-                <div className="flex justify-center pointer-events-auto">
+                {/* Center: Duty Toggle + work-mode (which job types to receive) */}
+                <div className="flex flex-col items-center gap-1.5 pointer-events-auto">
                     <button
                         disabled={isTogglingDuty}
                         onClick={handleDutyToggle}
@@ -2423,6 +2428,14 @@ const DriverHome = () => {
                             </span>
                         </div>
                     </button>
+
+                    {/* Hidden unless the driver holds BOTH taxi + delivery capability */}
+                    <WorkModeToggle
+                        workMode={workMode}
+                        serviceCapabilities={serviceCapabilities}
+                        onChange={setWorkMode}
+                        disabled={isTogglingDuty}
+                    />
                 </div>
 
                 {/* Right Side: Wallet */}
