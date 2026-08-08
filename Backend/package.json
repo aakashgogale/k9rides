@@ -23,9 +23,10 @@
     "migrate:unify-drivers": "node scripts/migrate-unify-drivers.js",
     "cleanup:legacy-collections": "node scripts/cleanup-legacy-collections.js",
     "verify-cancel": "node verify_cancellation.js",
-    "test": "npm run test:flow && npm run test:unify",
+    "test": "npm run test:flow && npm run test:unify && npm run test:assignment",
     "test:flow": "node tests/flow.smoke.mjs",
-    "test:unify": "node tests/unify.smoke.mjs"
+    "test:unify": "node tests/unify.smoke.mjs",
+    "test:assignment": "node tests/assignment.smoke.mjs"
   },
   "keywords": [],
   "author": "",
