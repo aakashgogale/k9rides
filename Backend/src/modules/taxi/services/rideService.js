@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { env } from '../../../config/env.js';
 import { logger } from '../../../utils/logger.js';
 import { sendTaxiInvoiceEmail } from '../../../services/email.service.js';
 import { sendTaxiInvoiceWhatsApp } from '../../../services/whatsapp.service.js';
@@ -13,6 +14,7 @@ import { Zone } from '../driver/models/Zone.js';
 import { WalletTransaction } from '../driver/models/WalletTransaction.js';
 import { incrementDriverTodaySummaryForCompletedRide } from '../driver/services/driverTodaySummaryService.js';
 import { applyDriverWalletAdjustment, ensureDriverWalletCanAcceptRide, settleCompletedRideWallet } from '../driver/services/walletService.js';
+import { releaseDriverAssignment } from '../driver/services/driverAssignmentService.js';
 import { Delivery } from '../user/models/Delivery.js';
 import { RideBid } from '../user/models/RideBid.js';
 import { Ride } from '../user/models/Ride.js';
@@ -1777,6 +1779,17 @@ export const acceptRideAssignment = async ({ rideId, driverId }) => {
       }
       driver.isOnRide = !isRideScheduledForFuture(ride);
 
+      // Driver unification: claim the cross-service busy-lock so this driver cannot also be
+      // assigned a food delivery. Pool rides are exempt (one driver holds a whole pool group).
+      // Flag-gated: no-op until UNIFIED_DISPATCH_ENABLED is on.
+      if (env.unifiedDispatchEnabled && !isPooling && !isRideScheduledForFuture(ride)) {
+        const { acquireDriverAssignment } = await import('../driver/services/driverAssignmentService.js');
+        const locked = await acquireDriverAssignment(driver._id, 'ride', ride._id, session);
+        if (!locked) {
+          throw new ApiError(409, 'Driver is already on another job');
+        }
+      }
+
       await ride.save({ session });
       await driver.save({ session });
       await session.commitTransaction();
@@ -2044,6 +2057,9 @@ export const updateRideLifecycle = async ({ rideId, driverId, nextStatus, paymen
     await Promise.all([
       User.findByIdAndUpdate(ride.userId, { currentRideId: null }),
       Driver.findByIdAndUpdate(driverId, { isOnRide: false }),
+      // Release the cross-service busy-lock. Safe no-op if this driver's lock points elsewhere
+      // (it only clears when activeAssignment.id === this ride) or when the flag is off.
+      releaseDriverAssignment(driverId, ride._id),
     ]);
 
     if (String(ride.paymentMethod || 'cash').trim().toLowerCase() === 'cash') {

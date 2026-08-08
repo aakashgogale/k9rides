@@ -6,6 +6,7 @@ import { UserWallet } from '../user/models/UserWallet.js';
 import { Driver } from '../driver/models/Driver.js';
 import { WalletTransaction } from '../driver/models/WalletTransaction.js';
 import { applyDriverWalletAdjustment } from '../driver/services/walletService.js';
+import { releaseDriverAssignment } from '../driver/services/driverAssignmentService.js';
 import { matchDrivers } from './matchingService.js';
 import {
   RIDE_LIVE_STATUS,
@@ -664,6 +665,7 @@ const closeRideAsUnmatched = async (rideId) => {
   // otherwise the driver can be left isOnRide:true with no active ride.
   if (ride.driverId) {
     await Driver.findByIdAndUpdate(ride.driverId, { isOnRide: false });
+    await releaseDriverAssignment(ride.driverId, ride._id);
   }
 
   await User.findByIdAndUpdate(ride.userId, { currentRideId: null });
@@ -720,6 +722,7 @@ export const cancelRideByAdmin = async (rideId) => {
   await Promise.all([
     User.findByIdAndUpdate(ride.userId, { currentRideId: null }),
     ride.driverId ? Driver.findByIdAndUpdate(ride.driverId, { isOnRide: false }) : Promise.resolve(),
+    ride.driverId ? releaseDriverAssignment(ride.driverId, ride._id) : Promise.resolve(),
   ]);
 
   emitToRoom(getUserRoom(ride.userId), 'rideCancelled', {
@@ -828,6 +831,7 @@ export const cancelRideByUser = async ({ rideId, userId, reason = '' }) => {
         $set: { currentRideId: null }
       }, { session }),
       (ride.driverId && !ride.isPoolRide) ? Driver.findByIdAndUpdate(ride.driverId, { isOnRide: false }, { session }) : Promise.resolve(),
+      (ride.driverId && !ride.isPoolRide) ? releaseDriverAssignment(ride.driverId, ride._id, session) : Promise.resolve(),
     ]);
 
     await session.commitTransaction();
@@ -1009,6 +1013,7 @@ export const cancelScheduledRideByDriver = async ({ rideId, driverId }) => {
     await Promise.all([
       User.findByIdAndUpdate(ride.userId, { currentRideId: null }, { session }),
       ride.driverId ? Driver.findByIdAndUpdate(ride.driverId, { isOnRide: false }, { session }) : Promise.resolve(),
+      ride.driverId ? releaseDriverAssignment(ride.driverId, ride._id, session) : Promise.resolve(),
     ]);
 
     await session.commitTransaction();
@@ -1146,6 +1151,7 @@ export const cancelActiveRideByDriver = async ({ rideId, driverId, reason = '' }
 
     if (previousDriverId) {
       await Driver.findByIdAndUpdate(previousDriverId, { isOnRide: false }, { session });
+      await releaseDriverAssignment(previousDriverId, ride._id, session);
     }
 
     await session.commitTransaction();

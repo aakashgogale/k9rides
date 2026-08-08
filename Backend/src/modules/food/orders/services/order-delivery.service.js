@@ -10,6 +10,7 @@ import {
 } from '../../../../core/auth/errors.js';
 import { buildPaginatedResult, buildPaginationOptions } from '../../../../utils/helpers.js';
 import { logger } from '../../../../utils/logger.js';
+import { config } from '../../../../config/env.js';
 import { getIO, rooms } from '../../../../config/socket.js';
 import { getFirebaseDB } from '../../../../config/firebase.js';
 import { fetchPolyline } from '../utils/googleMaps.js';
@@ -234,6 +235,40 @@ export async function listOrdersAvailableDelivery(deliveryPartnerId, query) {
   return buildPaginatedResult({ docs: enriched, total, page, limit });
 }
 
+/**
+ * Driver unification: resolve a legacy FoodDeliveryPartner to its unified Driver id.
+ * Populated by scripts/migrate-unify-drivers.js. Returns null when unmapped.
+ */
+async function resolveUnifiedDriverId(deliveryPartnerId) {
+  const p = await FoodDeliveryPartner.findById(deliveryPartnerId).select('driverId').lean();
+  return p?.driverId || null;
+}
+
+/**
+ * Claim the cross-service busy-lock for a delivery so this person can't also be given a taxi
+ * ride. Flag-gated: a no-op until UNIFIED_DISPATCH_ENABLED is on. Returns true when free to go.
+ */
+async function acquireDeliveryLock(deliveryPartnerId, orderId) {
+  if (!config.unifiedDispatchEnabled) return true;
+  const driverId = await resolveUnifiedDriverId(deliveryPartnerId);
+  if (!driverId) return true; // not migrated yet — don't block the legacy flow
+  const { acquireDriverAssignment } = await import(
+    '../../../taxi/driver/services/driverAssignmentService.js'
+  );
+  return acquireDriverAssignment(driverId, 'delivery', orderId);
+}
+
+/** Release the busy-lock for a finished/cancelled delivery. Safe no-op when unmapped or flag off. */
+async function releaseDeliveryLock(deliveryPartnerId, orderId) {
+  if (!config.unifiedDispatchEnabled) return;
+  const driverId = await resolveUnifiedDriverId(deliveryPartnerId);
+  if (!driverId) return;
+  const { releaseDriverAssignment } = await import(
+    '../../../taxi/driver/services/driverAssignmentService.js'
+  );
+  await releaseDriverAssignment(driverId, orderId);
+}
+
 export async function acceptOrderDelivery(orderId, deliveryPartnerId) {
   const identity = buildOrderIdentityFilter(orderId);
   if (!identity) throw new ValidationError('Order id required');
@@ -257,6 +292,13 @@ export async function acceptOrderDelivery(orderId, deliveryPartnerId) {
     note: 'Delivery partner accepted order',
     at: now,
   };
+
+  // Claim the cross-service busy-lock BEFORE assigning, so a driver already on a taxi ride
+  // cannot also take this order. No-op while the unified flag is off.
+  const lockOrderId = await FoodOrder.findOne(identity).select('_id').lean();
+  if (lockOrderId && !(await acquireDeliveryLock(partnerId, lockOrderId._id))) {
+    throw new ValidationError('You are already on another job');
+  }
 
   const order = await FoodOrder.findOneAndUpdate(
     {
@@ -285,6 +327,8 @@ export async function acceptOrderDelivery(orderId, deliveryPartnerId) {
   ).populate('restaurantId userId');
 
   if (!order) {
+    // Accept did not land — give the busy-lock back so the driver isn't stuck.
+    if (lockOrderId) await releaseDeliveryLock(partnerId, lockOrderId._id);
     const existing = await FoodOrder.findOne(identity)
       .select('orderStatus dispatch')
       .lean();
@@ -444,6 +488,7 @@ export async function rejectOrderDelivery(orderId, deliveryPartnerId) {
 
   const order = await FoodOrder.findOne(identity).select('+deliveryOtp');
   if (!order) throw new NotFoundError('Order not found');
+  await releaseDeliveryLock(deliveryPartnerId, order._id);
   if (order.dispatch.deliveryPartnerId?.toString() !== deliveryPartnerId.toString()) {
     throw new ForbiddenError('Not your order');
   }
@@ -828,6 +873,9 @@ export async function completeDelivery(orderId, deliveryPartnerId, body = {}) {
     recordedById: deliveryPartnerId,
     note: `Delivery completed. Prev status: ${prevPayStatus}`,
   });
+
+  // Delivery finished — free the driver for the next job (ride or delivery).
+  await releaseDeliveryLock(deliveryPartnerId, order._id);
 
   emitOrderUpdate(order, deliveryPartnerId);
   enqueueOrderEvent('delivery_completed', {
