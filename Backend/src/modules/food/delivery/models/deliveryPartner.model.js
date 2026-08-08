@@ -93,6 +93,14 @@ const deliveryPartnerSchema = new mongoose.Schema(
             enum: ['online', 'offline'],
             default: 'offline'
         },
+        // Unified-driver link (Phase 1: set by the backfill; the unified Driver is the source of
+        // truth for availability/busy-state once dispatch is migrated). Retired at contract.
+        driverId: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'TaxiDriver',
+            default: null,
+            index: true
+        },
         lastLocation: {
             type: { type: String, enum: ['Point'] },
             coordinates: { type: [Number] }

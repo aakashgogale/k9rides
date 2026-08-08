@@ -20,10 +20,12 @@
     "migrate:remove-restaurant-billing": "node scripts/remove-restaurant-billing-fields.js",
     "migrate:fcm-tokens": "node scripts/migrate-fcm-tokens-to-profile-models.js",
     "migrate:order-payments": "node scripts/migrate-orders-to-transactions.js",
+    "migrate:unify-drivers": "node scripts/migrate-unify-drivers.js",
     "cleanup:legacy-collections": "node scripts/cleanup-legacy-collections.js",
     "verify-cancel": "node verify_cancellation.js",
-    "test": "npm run test:flow",
-    "test:flow": "node tests/flow.smoke.mjs"
+    "test": "npm run test:flow && npm run test:unify",
+    "test:flow": "node tests/flow.smoke.mjs",
+    "test:unify": "node tests/unify.smoke.mjs"
   },
   "keywords": [],
   "author": "",

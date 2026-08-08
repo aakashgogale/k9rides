@@ -17,6 +17,16 @@ const geoPointSchema = new mongoose.Schema(
   { _id: false },
 );
 
+// Single busy-lock shared across ride + delivery dispatch. null when the driver is free.
+const activeAssignmentSchema = new mongoose.Schema(
+  {
+    type: { type: String, enum: ['ride', 'delivery'] },
+    id: { type: mongoose.Schema.Types.ObjectId },
+    at: { type: Date },
+  },
+  { _id: false },
+);
+
 const driverSchema = new mongoose.Schema(
   {
     name: {
@@ -114,6 +124,39 @@ const driverSchema = new mongoose.Schema(
     isOnRide: {
       type: Boolean,
       default: false,
+    },
+    // ---- Unified multi-service fields (Phase 1: additive, not yet wired to dispatch) ----
+    // What this driver is set up / approved to do. Onboarding or the backfill grants 'delivery'.
+    serviceCapabilities: {
+      type: [String],
+      enum: ['taxi', 'delivery'],
+      default: ['taxi'],
+    },
+    // The in-app toggle: which job streams the driver wants right now.
+    workMode: {
+      type: String,
+      enum: ['all', 'taxi', 'delivery'],
+      default: 'all',
+    },
+    // Single busy-lock shared across BOTH dispatchers (Phase 2 wires this). null = free.
+    activeAssignment: {
+      type: activeAssignmentSchema,
+      default: null,
+    },
+    // Lightweight delivery dispatch hints kept on the core doc so matching needs no join.
+    delivery: {
+      vehicleType: { type: String, default: '' },
+      vehicleName: { type: String, default: '' },
+      vehicleNumber: { type: String, default: '' },
+      // Per-driver COD cash ceiling snapshot (global default lives in FoodDeliveryCashLimit).
+      codCashLimit: { type: Number, default: 0, min: 0 },
+    },
+    // Link to the legacy FoodDeliveryPartner during the dual-run phase (retired at contract).
+    legacyDeliveryPartnerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'FoodDeliveryPartner',
+      default: null,
+      index: true,
     },
     socketId: {
       type: String,
@@ -441,6 +484,8 @@ driverSchema.index({ status: 1, deletedAt: 1 });
 driverSchema.index({ phone: 1, deletedAt: 1 });
 
 driverSchema.index({ isOnline: 1, isOnRide: 1, isPoolEnabled: 1 });
+// Unified dispatch: find online, free, capable drivers for a given service + work mode.
+driverSchema.index({ isOnline: 1, serviceCapabilities: 1, workMode: 1, 'activeAssignment.type': 1 });
 driverSchema.index({ location: '2dsphere' });
 driverSchema.index({ 'routeBooking.anchorLocation': '2dsphere' });
 
